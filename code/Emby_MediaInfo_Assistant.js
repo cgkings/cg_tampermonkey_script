@@ -1,12 +1,11 @@
 // ==UserScript==
 // @name         Emby媒体信息获取助手
 // @namespace    http://tampermonkey.net/
-// @version      0.0.2
-// @description  支持全站高效获取EMBY媒体信息，无需API KEY，支持电影和电视节目
+// @version      0.0.3
+// @description  高效获取Emby媒体信息，直接使用Emby用户内置API，支持电影和电视节目，无需额外认证
 // @license      MIT
 // @author       优化版
 // @match        *://*/web/index.html*
-// @grant        GM.xmlHttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_registerMenuCommand
@@ -158,6 +157,14 @@
     // 提取ItemID
     function extractItemId() {
         try {
+            const hash = window.location.hash;
+            const idMatch = /id=([^&]+)/.exec(hash);
+
+            if (idMatch && idMatch[1]) {
+                return idMatch[1];
+            }
+
+            // 兼容其他格式
             const params = getHashParams();
             return params.id;
         } catch (error) {
@@ -169,24 +176,82 @@
     // 检测页面类型
     function detectPageType() {
         const hash = window.location.hash;
-        if (hash.includes('#!/item?id=')) {
-            // 检查是否为电视节目的季或集页面
-            if (domUtils.elementExists('.itemName-secondary')) {
-                return 'tvshow';
-            }
-            return 'movie';
+
+        // 首先检查URL是否包含项目ID
+        if (hash.includes('#!/item?id=') || hash.includes('#!/details?id=')) {
+            // 尝试从DOM确定媒体类型
+            const mediaType = determineMediaTypeFromDOM();
+            logger.debug('从DOM确定的媒体类型:', mediaType);
+            return mediaType;
         }
         return 'other';
     }
 
-    // 检测Emby版本和API路径
-    function getEmbyApiBaseUrl() {
-        // 从URL构建API基础URL
-        const url = new URL(window.location.href);
-        return `${url.protocol}//${url.host}`;
+    // 从DOM元素判断媒体类型
+    function determineMediaTypeFromDOM() {
+        try {
+            const apiClient = getApiClient();
+            if (apiClient) {
+                // 尝试从URL获取ItemId
+                const itemId = extractItemId();
+
+                // 如果能从URL中提取到ID，检查这是电影页面还是电视节目页面的元素特征
+
+                // 查找更可靠的电视节目标记
+                if (document.querySelector('.itemName-secondary') ||
+                    document.querySelector('.itemMiscInfo-primary') ||
+                    document.querySelector('.tvshowInfo')) {
+                    return 'tvshow';
+                }
+
+                // 查找电影标记
+                if (document.querySelector('.mediaInfoItem') &&
+                    document.body.innerText.match(/电影|Movie/i)) {
+                    return 'movie';
+                }
+
+                // 检查项目卡片
+                const cards = document.querySelectorAll('.card');
+                for (const card of cards) {
+                    if (card.classList.contains('backdropCard') ||
+                        card.classList.contains('portraitCard')) {
+                        const cardText = card.innerText || '';
+                        if (cardText.match(/季|集|Season|Episode/i)) {
+                            return 'tvshow';
+                        }
+                    }
+                }
+
+                // 查找播放按钮
+                const playButton = document.querySelector('.detailButton-play');
+                if (playButton) {
+                    return 'movie'; // 默认视为电影，因为大多数有直接播放按钮的是电影
+                }
+            }
+
+            // 没有足够标记，默认为电影
+            return 'movie';
+        } catch (e) {
+            logger.error('媒体类型判断错误:', e);
+            return 'movie'; // 出错时默认为电影
+        }
     }
 
-    // 获取媒体信息核心函数
+    // 获取Emby客户端API实例
+    function getApiClient() {
+        if (typeof ApiClient !== 'undefined') {
+            return ApiClient;
+        }
+
+        if (typeof window.ApiClient !== 'undefined') {
+            return window.ApiClient;
+        }
+
+        logger.error('无法获取Emby API客户端');
+        return null;
+    }
+
+    // 使用Emby内置API获取媒体信息
     async function getMediaInfo(itemId, mediaType = 'movie') {
         // 检查缓存
         const cacheKey = `media_info_${itemId}`;
@@ -197,27 +262,38 @@
             return cachedData;
         }
 
-        // 构建请求URL
-        const baseUrl = getEmbyApiBaseUrl();
-        const apiUrl = `${baseUrl}/Items/${itemId}/PlaybackInfo`;
-
         // 添加状态提示
         showStatusMessage(`正在获取媒体信息...`);
 
-        // 尝试获取数据
+        // 获取API客户端
+        const apiClient = getApiClient();
+        if (!apiClient) {
+            showStatusMessage('无法获取Emby API客户端', 'error');
+            return null;
+        }
+
         try {
-            const data = await fetchWithRetry(apiUrl);
+            // 使用Emby内置API获取媒体信息
+            const playbackInfo = await apiClient.getPlaybackInfo(itemId, {});
+            logger.info('媒体信息获取成功:', playbackInfo);
 
-            if (data) {
-                // 缓存结果
-                cache.set(cacheKey, data);
+            // 获取更详细的项目信息
+            const userId = apiClient._serverInfo ? apiClient._serverInfo.UserId : apiClient.getCurrentUserId();
+            const itemInfo = await apiClient.getItem(userId, itemId);
 
-                // 处理媒体信息
-                handleMediaInfo(data, itemId);
-                return data;
-            } else {
-                throw new Error('获取媒体信息失败');
-            }
+            // 合并所有信息
+            const fullInfo = {
+                playbackInfo: playbackInfo,
+                itemInfo: itemInfo
+            };
+
+            // 缓存结果
+            cache.set(cacheKey, fullInfo);
+
+            // 处理媒体信息
+            handleMediaInfo(fullInfo, itemId);
+            return fullInfo;
+
         } catch (error) {
             logger.error('获取媒体信息出错:', error);
             showStatusMessage(`获取媒体信息失败: ${error.message}`, 'error');
@@ -225,95 +301,100 @@
         }
     }
 
-    // 使用GM.xmlHttpRequest进行请求
-    function fetchData(url) {
-        return new Promise((resolve, reject) => {
-            GM.xmlHttpRequest({
-                method: "GET",
-                url: url,
-                timeout: 10000, // 10秒超时
-                onload: function (response) {
-                    if (response.status >= 200 && response.status < 400) {
-                        try {
-                            const data = JSON.parse(response.responseText);
-                            resolve(data);
-                        } catch (error) {
-                            reject(new Error(`JSON解析错误: ${error.message}`));
-                        }
-                    } else {
-                        reject(new Error(`请求失败: ${response.status} ${response.statusText}`));
-                    }
-                },
-                onerror: function (error) {
-                    reject(new Error(`请求错误: ${error}`));
-                },
-                ontimeout: function () {
-                    reject(new Error('请求超时'));
-                }
-            });
-        });
-    }
-
-    // 带重试的获取数据
-    async function fetchWithRetry(url, maxRetries = CONFIG.retry.maxRetries, delay = CONFIG.retry.delay) {
-        let retries = 0;
-
-        while (true) {
-            try {
-                return await fetchData(url);
-            } catch (error) {
-                if (retries < maxRetries) {
-                    retries++;
-                    logger.info(`请求失败，正在重试 (${retries}/${maxRetries})...`);
-                    showStatusMessage(`获取失败，正在重试 (${retries}/${maxRetries})...`);
-                    await sleep(delay);
-                } else {
-                    throw error;
-                }
-            }
-        }
-    }
-
     // 获取电视节目的季和集信息
     async function getTvShowEpisodes(itemId) {
         try {
-            const baseUrl = getEmbyApiBaseUrl();
-            const apiUrl = `${baseUrl}/Items?ParentId=${itemId}&IncludeItemTypes=Season&SortBy=SortName&SortOrder=Ascending`;
-
-            showStatusMessage(`正在获取季信息...`);
-            const seasons = await fetchWithRetry(apiUrl);
-
-            if (!seasons || !seasons.Items || seasons.Items.length === 0) {
-                throw new Error('无法获取季信息');
+            const apiClient = getApiClient();
+            if (!apiClient) {
+                throw new Error('无法获取Emby API客户端');
             }
 
-            logger.info(`找到 ${seasons.Items.length} 个季`);
+            const userId = apiClient._serverInfo ? apiClient._serverInfo.UserId : apiClient.getCurrentUserId();
 
-            // 创建进度显示
-            const totalSeasons = seasons.Items.length;
-            let currentSeason = 0;
+            // 获取电视节目详情
+            showStatusMessage(`正在获取电视节目信息...`);
 
-            // 获取每个季的剧集
-            const allEpisodes = [];
-            for (const season of seasons.Items) {
-                currentSeason++;
-                showStatusMessage(`正在获取剧集信息 (季 ${currentSeason}/${totalSeasons})...`);
+            try {
+                const tvShowInfo = await apiClient.getItem(userId, itemId);
+                logger.debug('获取到的项目信息:', tvShowInfo);
 
-                const episodesUrl = `${baseUrl}/Items?ParentId=${season.Id}&IncludeItemTypes=Episode&SortBy=SortName&SortOrder=Ascending`;
-                const episodes = await fetchWithRetry(episodesUrl);
-
-                if (episodes && episodes.Items) {
-                    allEpisodes.push(...episodes.Items);
+                // 检查项目类型
+                if (tvShowInfo && tvShowInfo.Type !== 'Series' && tvShowInfo.Type !== 'Season') {
+                    // 如果不是电视剧，使用电影处理方式
+                    logger.info('检测到项目不是电视剧，而是:', tvShowInfo.Type);
+                    await getMediaInfo(itemId, 'movie');
+                    return [];
                 }
 
-                // 限流
-                if (currentSeason < totalSeasons) {
-                    await sleep(300);
+                // 获取季信息 - 使用通用API
+                showStatusMessage(`正在获取季信息...`);
+
+                const seasonOptions = {
+                    userId: userId,
+                    parentId: itemId,
+                    includeItemTypes: 'Season'
+                };
+
+                // 尝试使用Items API
+                const seasons = await apiClient.getItems(userId, seasonOptions);
+
+                if (!seasons || !seasons.Items || seasons.Items.length === 0) {
+                    if (tvShowInfo.Type === 'Season') {
+                        // 如果项目本身就是季，直接获取其中的剧集
+                        const episodes = await apiClient.getItems(userId, {
+                            parentId: itemId,
+                            includeItemTypes: 'Episode'
+                        });
+
+                        if (episodes && episodes.Items && episodes.Items.length > 0) {
+                            logger.info(`找到 ${episodes.Items.length} 个剧集`);
+                            return episodes.Items;
+                        }
+                    }
+
+                    throw new Error('无法获取季信息，或者该剧集没有季');
                 }
+
+                logger.info(`找到 ${seasons.Items.length} 个季`);
+
+                // 创建进度显示
+                const totalSeasons = seasons.Items.length;
+                let currentSeason = 0;
+
+                // 获取每个季的剧集
+                const allEpisodes = [];
+                for (const season of seasons.Items) {
+                    currentSeason++;
+                    showStatusMessage(`正在获取剧集信息 (季 ${currentSeason}/${totalSeasons})...`);
+
+                    try {
+                        // 使用通用Items API获取剧集
+                        const episodes = await apiClient.getItems(userId, {
+                            parentId: season.Id,
+                            includeItemTypes: 'Episode'
+                        });
+
+                        if (episodes && episodes.Items) {
+                            allEpisodes.push(...episodes.Items);
+                        }
+                    } catch (error) {
+                        logger.error(`获取季 ${season.Name} 的剧集失败:`, error);
+                    }
+
+                    // 限流
+                    if (currentSeason < totalSeasons) {
+                        await sleep(300);
+                    }
+                }
+
+                logger.info(`找到 ${allEpisodes.length} 个剧集`);
+                return allEpisodes;
+            } catch (error) {
+                logger.error('获取项目详情失败:', error);
+                // 如果获取详情失败，尝试作为电影处理
+                await getMediaInfo(itemId, 'movie');
+                return [];
             }
-
-            logger.info(`找到 ${allEpisodes.length} 个剧集`);
-            return allEpisodes;
 
         } catch (error) {
             logger.error('获取电视节目信息出错:', error);
@@ -324,12 +405,14 @@
 
     // 处理获取到的媒体信息
     function handleMediaInfo(data, itemId) {
-        if (!data || !data.MediaSources || data.MediaSources.length === 0) {
+        if (!data || !data.playbackInfo || !data.playbackInfo.MediaSources || data.playbackInfo.MediaSources.length === 0) {
             logger.error('无效的媒体信息');
             return;
         }
 
-        const mediaSource = data.MediaSources[0];
+        const mediaSource = data.playbackInfo.MediaSources[0];
+        const itemInfo = data.itemInfo || {};
+
         logger.info("媒体信息获取成功:", data);
         logger.info("媒体源路径:", mediaSource.Path);
 
@@ -353,7 +436,7 @@
         statusDiv.textContent = message;
 
         // 自动隐藏错误消息
-        if (type === 'error') {
+        if (type === 'error' || message.includes('完成')) {
             setTimeout(() => {
                 if (statusDiv && statusDiv.parentNode) {
                     document.body.removeChild(statusDiv);
@@ -374,19 +457,52 @@
         }
 
         // 提取重要信息
-        const mediaSource = data.MediaSources[0];
+        const mediaSource = data.playbackInfo.MediaSources[0];
+        const itemInfo = data.itemInfo || {};
         const mediaPath = mediaSource.Path || '未知路径';
         const mediaContainer = mediaSource.Container || '未知容器';
-        const mediaFormat = mediaSource.MediaStreams && mediaSource.MediaStreams.length > 0
-            ? `${mediaSource.MediaStreams[0].Codec || '未知'} (${mediaSource.MediaStreams[0].DisplayTitle || '未知'})`
-            : '未知格式';
 
-        statusDiv.innerHTML = `
+        // 获取媒体流信息
+        let videoInfo = '未知';
+        let audioInfo = '未知';
+        let subtitleInfo = '';
+
+        if (mediaSource.MediaStreams && mediaSource.MediaStreams.length > 0) {
+            for (const stream of mediaSource.MediaStreams) {
+                if (stream.Type === 'Video') {
+                    videoInfo = `${stream.Codec || '未知'} (${stream.Width || '?'}x${stream.Height || '?'})`;
+                    if (stream.BitRate) {
+                        videoInfo += `, ${Math.round(stream.BitRate / 1000)} kbps`;
+                    }
+                } else if (stream.Type === 'Audio') {
+                    audioInfo = `${stream.Codec || '未知'} (${stream.ChannelLayout || stream.Channels || '?'} 声道)`;
+                    if (stream.Language) {
+                        audioInfo += `, ${stream.Language}`;
+                    }
+                } else if (stream.Type === 'Subtitle') {
+                    subtitleInfo += `${subtitleInfo ? '<br>' : ''}· ${stream.Language || '未知语言'} (${stream.Codec || '未知格式'})`;
+                }
+            }
+        }
+
+        // 构建基本信息HTML
+        let infoHtml = `
             <div>
                 <h3 style="margin-top: 0;">媒体信息获取成功</h3>
+                <p><strong>名称:</strong> ${itemInfo.Name || '未知'}</p>
                 <p><strong>路径:</strong> ${mediaPath}</p>
                 <p><strong>容器格式:</strong> ${mediaContainer}</p>
-                <p><strong>媒体格式:</strong> ${mediaFormat}</p>
+                <p><strong>视频:</strong> ${videoInfo}</p>
+                <p><strong>音频:</strong> ${audioInfo}</p>
+        `;
+
+        // 如果有字幕，添加字幕信息
+        if (subtitleInfo) {
+            infoHtml += `<p><strong>字幕:</strong><br>${subtitleInfo}</p>`;
+        }
+
+        // 添加详细信息和关闭按钮
+        infoHtml += `
                 <details>
                     <summary>详细信息</summary>
                     <div style="max-height: 40vh; overflow-y: auto;">
@@ -397,70 +513,13 @@
             </div>
         `;
 
+        statusDiv.innerHTML = infoHtml;
+
         document.getElementById('close-emby-info').addEventListener('click', function () {
             if (statusDiv && statusDiv.parentNode) {
                 document.body.removeChild(statusDiv);
             }
         });
-    }
-
-    // 添加刷新按钮
-    function addActionButtons() {
-        // 移除现有按钮（如果存在）
-        const existingButtons = document.querySelectorAll('.emby-custom-button');
-        existingButtons.forEach(button => {
-            if (button && button.parentNode) {
-                button.parentNode.removeChild(button);
-            }
-        });
-
-        // 添加刷新按钮
-        const refreshButton = document.createElement('button');
-        refreshButton.textContent = '获取媒体信息';
-        refreshButton.className = 'emby-custom-button';
-        refreshButton.style.cssText = 'position: fixed; bottom: 20px; right: 20px; padding: 10px; background: #00a8ff; color: white; border: none; border-radius: 5px; cursor: pointer; z-index: 9999;';
-
-        refreshButton.addEventListener('click', async function () {
-            const pageType = detectPageType();
-
-            if (pageType === 'movie' || pageType === 'tvshow') {
-                const itemId = extractItemId();
-                if (itemId) {
-                    if (pageType === 'movie') {
-                        await getMediaInfo(itemId, 'movie');
-                    } else {
-                        // 对于电视节目，先获取季和集
-                        showStatusMessage('正在分析电视节目...');
-                        const episodes = await getTvShowEpisodes(itemId);
-
-                        if (episodes.length > 0) {
-                            showMediaInfoSummary(episodes);
-                        } else {
-                            showStatusMessage('没有找到剧集信息', 'error');
-                        }
-                    }
-                } else {
-                    showStatusMessage('无法识别当前项目ID', 'error');
-                }
-            } else {
-                showStatusMessage('请在媒体详情页面使用此功能', 'error');
-            }
-        });
-
-        document.body.appendChild(refreshButton);
-
-        // 添加清除缓存按钮
-        const clearCacheButton = document.createElement('button');
-        clearCacheButton.textContent = '清除缓存';
-        clearCacheButton.className = 'emby-custom-button';
-        clearCacheButton.style.cssText = 'position: fixed; bottom: 20px; right: 150px; padding: 10px; background: #f44336; color: white; border: none; border-radius: 5px; cursor: pointer; z-index: 9999;';
-
-        clearCacheButton.addEventListener('click', function () {
-            clearMediaInfoCache();
-            showStatusMessage('媒体信息缓存已清除');
-        });
-
-        document.body.appendChild(clearCacheButton);
     }
 
     // 显示电视节目剧集信息摘要
@@ -553,6 +612,121 @@
         });
     }
 
+    // 检查页面是否已经显示了媒体信息
+    function hasExistingMediaInfo() {
+        // 检查是否已经显示了媒体信息元素
+        return domUtils.elementExists('#emby-status-info') || domUtils.elementExists('.mediaFileInfo');
+    }
+
+    // 添加刷新按钮
+    function addActionButtons() {
+        // 移除现有按钮（如果存在）
+        const existingButtons = document.querySelectorAll('.emby-custom-button');
+        existingButtons.forEach(button => {
+            if (button && button.parentNode) {
+                button.parentNode.removeChild(button);
+            }
+        });
+
+        // 添加刷新按钮
+        const refreshButton = document.createElement('button');
+        refreshButton.textContent = '获取媒体信息';
+        refreshButton.className = 'emby-custom-button';
+        refreshButton.style.cssText = 'position: fixed; bottom: 20px; right: 20px; padding: 10px; background: #00a8ff; color: white; border: none; border-radius: 5px; cursor: pointer; z-index: 9999;';
+
+        refreshButton.addEventListener('click', async function () {
+            // 移除现有的媒体信息显示
+            const existingInfo = document.getElementById('emby-status-info');
+            if (existingInfo && existingInfo.parentNode) {
+                existingInfo.parentNode.removeChild(existingInfo);
+            }
+
+            const itemId = extractItemId();
+            logger.debug('提取的项目ID:', itemId);
+
+            if (!itemId) {
+                logger.error('无法提取项目ID，URL哈希:', window.location.hash);
+                showStatusMessage('无法识别当前项目ID，请确保您在媒体详情页面', 'error');
+                return;
+            }
+
+            // 清除此项目的缓存
+            const cacheKey = `media_info_${itemId}`;
+            cache.remove(cacheKey);
+
+            try {
+                // 获取API客户端
+                const apiClient = getApiClient();
+                if (!apiClient) {
+                    showStatusMessage('无法获取Emby API客户端', 'error');
+                    return;
+                }
+
+                const userId = apiClient._serverInfo ? apiClient._serverInfo.UserId : apiClient.getCurrentUserId();
+
+                // 先获取项目信息，判断类型
+                showStatusMessage('正在获取项目信息...');
+                const itemInfo = await apiClient.getItem(userId, itemId);
+
+                logger.debug('获取到的项目信息:', itemInfo);
+
+                // 根据项目类型决定处理方式
+                if (itemInfo.Type === 'Series') {
+                    // 电视剧系列
+                    showStatusMessage('正在分析电视节目...');
+                    const episodes = await getTvShowEpisodes(itemId);
+
+                    if (episodes.length > 0) {
+                        showMediaInfoSummary(episodes);
+                    } else {
+                        showStatusMessage('没有找到剧集信息，或者该剧没有分季', 'error');
+                    }
+                } else if (itemInfo.Type === 'Season') {
+                    // 季
+                    showStatusMessage('正在获取季信息...');
+                    const episodes = await getTvShowEpisodes(itemId);
+
+                    if (episodes.length > 0) {
+                        showMediaInfoSummary(episodes);
+                    } else {
+                        showStatusMessage('没有找到剧集信息', 'error');
+                    }
+                } else if (itemInfo.Type === 'Episode') {
+                    // 单集
+                    await getMediaInfo(itemId, 'episode');
+                } else {
+                    // 电影或其他
+                    await getMediaInfo(itemId, 'movie');
+                }
+            } catch (error) {
+                logger.error('处理媒体信息出错:', error);
+                showStatusMessage(`处理媒体信息失败: ${error.message}`, 'error');
+
+                // 出错时尝试直接获取媒体信息
+                try {
+                    await getMediaInfo(itemId, 'movie');
+                } catch (fallbackError) {
+                    logger.error('备用方法也失败:', fallbackError);
+                }
+            }
+        });
+
+        document.body.appendChild(refreshButton);
+
+        // 添加清除缓存按钮
+        const clearCacheButton = document.createElement('button');
+        clearCacheButton.textContent = '清除缓存';
+        clearCacheButton.className = 'emby-custom-button';
+        clearCacheButton.style.cssText = 'position: fixed; bottom: 20px; right: 150px; padding: 10px; background: #f44336; color: white; border: none; border-radius: 5px; cursor: pointer; z-index: 9999;';
+
+        clearCacheButton.addEventListener('click', function () {
+            clearMediaInfoCache();
+            showStatusMessage('媒体信息缓存已清除');
+        });
+
+        document.body.appendChild(clearCacheButton);
+    }
+
     // 清除媒体信息缓存
     function clearMediaInfoCache() {
         const prefix = 'media_info_';
@@ -571,33 +745,12 @@
 
     // 主函数
     function main() {
-        // 检测页面类型
-        const pageType = detectPageType();
-        logger.debug('当前页面类型:', pageType);
-
-        // 更新UI
+        // 更新UI，只添加按钮，不自动获取
         addActionButtons();
 
-        // 如果是媒体详情页，自动执行获取
-        if ((pageType === 'movie' || pageType === 'tvshow') && domUtils.elementExists('.detailPageContent')) {
-            const itemId = extractItemId();
-            if (itemId) {
-                // 避免页面加载时就立即执行，给用户一些反应时间
-                setTimeout(async () => {
-                    // 检查是否已经有缓存，如果有则不自动触发
-                    const cacheKey = `media_info_${itemId}`;
-                    const cachedData = cache.get(cacheKey);
-
-                    if (!cachedData) {
-                        logger.debug('自动获取媒体信息:', itemId);
-                        if (pageType === 'movie') {
-                            await getMediaInfo(itemId, 'movie');
-                        }
-                        // 电视节目不自动获取，因为可能有很多集
-                    }
-                }, 1500);
-            }
-        }
+        // 日志显示当前环境
+        const envInfo = getEnvironmentInfo();
+        logger.debug('当前环境信息:', envInfo);
     }
 
     // 监听URL变化
@@ -615,14 +768,76 @@
         }, 1000);
     }
 
+    // 获取脚本运行环境信息
+    function getEnvironmentInfo() {
+        let info = {
+            url: window.location.href,
+            hash: window.location.hash,
+            apiAvailable: typeof ApiClient !== 'undefined',
+            browser: navigator.userAgent
+        };
+
+        return info;
+    }
+
+    // 检查Emby API是否可用
+    function checkEmbyApi() {
+        // 等待API可用
+        const waitForApi = (maxTries = 20, interval = 150) => {
+            return new Promise((resolve) => {
+                let tries = 0;
+
+                const check = () => {
+                    if (typeof ApiClient !== 'undefined') {
+                        logger.info('找到Emby API客户端');
+                        resolve(true);
+                        return;
+                    }
+
+                    if (typeof window.ApiClient !== 'undefined') {
+                        logger.info('找到window.ApiClient');
+                        resolve(true);
+                        return;
+                    }
+
+                    tries++;
+                    if (tries < maxTries) {
+                        setTimeout(check, interval);
+                    } else {
+                        logger.error('等待Emby API超时');
+                        resolve(false);
+                    }
+                };
+
+                check();
+            });
+        };
+
+        return waitForApi();
+    }
+
     // 初始化
-    function init() {
+    async function init() {
         // 等待页面加载
-        setTimeout(() => {
-            logger.info('Emby媒体信息获取助手已启动');
+        await sleep(1000);
+
+        const envInfo = getEnvironmentInfo();
+        logger.info('Emby媒体信息获取助手启动中...', envInfo);
+        logger.info('脚本版本: 3.2 (已修复API访问方式)');
+
+        // 等待Emby API可用
+        const apiAvailable = await checkEmbyApi();
+
+        if (apiAvailable) {
+            logger.info('Emby API可用，脚本初始化完成');
             main();
             setupURLChangeListener();
-        }, 1500);
+        } else {
+            logger.error('Emby API不可用，将使用有限功能');
+            // 仍然尝试初始化，但功能可能受限
+            main();
+            setupURLChangeListener();
+        }
     }
 
     // 启动脚本
