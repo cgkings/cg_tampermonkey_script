@@ -1,4 +1,4 @@
-name: Create Release for Jump to Emby
+name: Update Jump to Emby to Greasy Fork
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  create-release:
+  update-greasy-fork:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -28,6 +28,66 @@ jobs:
           TAG_MESSAGE=$(git tag -l --format='%(contents)' jump_to_emby_v$VERSION)
           TAG_MESSAGE="${TAG_MESSAGE//$'\n'/'%0A'}"
           echo "CHANGELOG=$TAG_MESSAGE" >> $GITHUB_OUTPUT
+          
+      - name: Update script version
+        run: |
+          # 更新版本号
+          sed -i "s/\/\/ @version      .*$/\/\/ @version      ${{ steps.extract_info.outputs.VERSION }}/" scripts/Jump_to_Emby/Jump_to_Emby.user.js
+          
+          # 读取更新后的文件内容
+          SCRIPT_CONTENT=$(cat scripts/Jump_to_Emby/Jump_to_Emby.user.js)
+          
+          # 使用GitHub API更新文件
+          CHANGELOG_CONTENT=$(echo "${{ steps.extract_info.outputs.CHANGELOG }}" | sed 's/%0A/\\n/g')
+          
+          # 检查CHANGELOG.md是否存在
+          if [ -f "scripts/Jump_to_Emby/CHANGELOG.md" ]; then
+            EXISTING_CHANGELOG=$(cat scripts/Jump_to_Emby/CHANGELOG.md)
+            NEW_CHANGELOG="# Jump to Emby 更新日志\n\n### v${{ steps.extract_info.outputs.VERSION }}\n$(echo "$CHANGELOG_CONTENT" | sed 's/\\n/\\n/g')\n\n$EXISTING_CHANGELOG"
+          else
+            NEW_CHANGELOG="# Jump to Emby 更新日志\n\n### v${{ steps.extract_info.outputs.VERSION }}\n$(echo "$CHANGELOG_CONTENT" | sed 's/\\n/\\n/g')"
+          fi
+          
+          # 更新脚本文件
+          curl -X PUT \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/contents/scripts/Jump_to_Emby/Jump_to_Emby.user.js" \
+            -d '{
+              "message": "Update version to ${{ steps.extract_info.outputs.VERSION }}",
+              "content": "'"$(echo -n "$SCRIPT_CONTENT" | base64 -w 0)"'",
+              "sha": "'$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/${{ github.repository }}/contents/scripts/Jump_to_Emby/Jump_to_Emby.user.js" | jq -r .sha)'",
+              "branch": "main"
+            }'
+          
+          # 更新CHANGELOG.md文件
+          # 检查CHANGELOG.md是否已存在
+          CHANGELOG_SHA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/${{ github.repository }}/contents/scripts/Jump_to_Emby/CHANGELOG.md" | jq -r .sha 2>/dev/null || echo "")
+          
+          if [ -n "$CHANGELOG_SHA" ]; then
+            # 更新现有的CHANGELOG.md
+            curl -X PUT \
+              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/${{ github.repository }}/contents/scripts/Jump_to_Emby/CHANGELOG.md" \
+              -d '{
+                "message": "Update changelog for version ${{ steps.extract_info.outputs.VERSION }}",
+                "content": "'"$(echo -n "$NEW_CHANGELOG" | base64 -w 0)"'",
+                "sha": "'"$CHANGELOG_SHA"'",
+                "branch": "main"
+              }'
+          else
+            # 创建新的CHANGELOG.md
+            curl -X PUT \
+              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/${{ github.repository }}/contents/scripts/Jump_to_Emby/CHANGELOG.md" \
+              -d '{
+                "message": "Create changelog for version ${{ steps.extract_info.outputs.VERSION }}",
+                "content": "'"$(echo -n "$NEW_CHANGELOG" | base64 -w 0)"'",
+                "branch": "main"
+              }'
+          fi
           
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
