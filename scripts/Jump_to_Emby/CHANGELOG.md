@@ -1,1 +1,1 @@
-# Jump to Emby 更新日志\n\n### v0.0.1\n- 首次发布 - 支持JavBus、JavDB和色花堂网站 - 添加自定义配置选项 - 实现列表页高亮和详情页跳转功能\n\n
+# Jump to Emby 更新日志\n\n### v0.0.2\njump_to_emby_v0.0.2\n\n1.增加状态指示器；\n2.列表页修改优化emby api批量查询接口\n\n
