@@ -1,0 +1,35 @@
+name: Update Emby MediaInfo Assistant to Greasy Fork
+
+on:
+  push:
+    tags:
+      - 'mediainfo-v*' # 只针对mediainfo标签触发
+
+jobs:
+  update-greasy-fork:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      
+      - name: Extract version
+        id: extract_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/mediainfo-v}" >> $GITHUB_OUTPUT
+      
+      - name: Update version in script
+        run: |
+          # 确保脚本中的版本号与标签一致
+          sed -i "s/\/\/ @version      .*$/\/\/ @version      ${{ steps.extract_version.outputs.VERSION }}/" scripts/Emby_MediaInfo_Assistant/Emby_MediaInfo_Assistant.user.js
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          git commit -am "Update version to ${{ steps.extract_version.outputs.VERSION }}" || echo "No changes to commit"
+      
+      - name: Trigger Greasy Fork update
+        run: |
+          # 这里可以使用curl触发webhook，但通常不需要，因为Greasy Fork会自动检测GitHub的更新
+          echo "Pushed update to GitHub, Greasy Fork should automatically sync"
