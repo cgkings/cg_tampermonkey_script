@@ -1,10 +1,12 @@
 // ==UserScript==
-// @name         跳转到Emby播放 (优化版)
-// @namespace    http://tampermonkey.net/
-// @version      20250422
-// @description  在JavBus/Javdb/Sehuatang高亮emby存在的视频，并在详情页提供一键跳转功能(优化速度)
+// @name         跳转到Emby播放
+// @name:en      Jump to Emby Player
+// @namespace    https://github.com/cgkings
+// @version      0.0.1
+// @description  👆👆👆👆👆👆👆在 ✅JavBus✅Javdb✅Sehuatang 高亮emby存在的视频，并提供标注一键跳转功能
+// @author       cgkings
 // @match        *://www.javbus.com/*
-// @include      *://javdb*.com/v/*
+// @match        *://javdb*.com/v/*
 // @match        *://javdb*.com/search?q=*
 // @match        *://www.javdb.com/*
 // @match        *://javdb.com/*
@@ -17,7 +19,12 @@
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
 // @grant        GM_addStyle
+// @run-at       document-start
+// @priority     1
 // @license      MIT
+// @supportURL   https://github.com/cgkings/cg_tampermonkey_script/issues
+// @homepageURL  https://github.com/cgkings/cg_tampermonkey_script
+// @license MIT
 // ==/UserScript==
 
 // 默认配置
@@ -25,8 +32,7 @@ const DEFAULT_CONFIG = {
     embyAPI: "",
     embyBaseUrl: "http://localhost:8096/",
     highlightColor: "#52b54b",
-    maxConcurrentRequests: 50,
-    cacheTTL: 7 // 缓存有效期(天)
+    maxConcurrentRequests: 50, // 增加了最大并发请求数
 };
 
 // 获取用户配置或使用默认值
@@ -36,11 +42,10 @@ function getConfig() {
         embyBaseUrl: GM_getValue('embyBaseUrl', DEFAULT_CONFIG.embyBaseUrl),
         highlightColor: GM_getValue('highlightColor', DEFAULT_CONFIG.highlightColor),
         maxConcurrentRequests: GM_getValue('maxConcurrentRequests', DEFAULT_CONFIG.maxConcurrentRequests),
-        cacheTTL: GM_getValue('cacheTTL', DEFAULT_CONFIG.cacheTTL)
     };
 }
 
-// 添加样式
+// 添加配置UI样式
 GM_addStyle(`
 .emby-settings-panel {
     position: fixed;
@@ -104,19 +109,6 @@ GM_addStyle(`
     background-color: #f0f0f0;
     color: #333;
 }
-#emby-progress-bar {
-    position: fixed;
-    bottom: 10px;
-    right: 10px;
-    background: rgba(0,0,0,0.7);
-    color: white;
-    padding: 8px 12px;
-    border-radius: 4px;
-    z-index: 9999;
-    font-size: 12px;
-    transition: opacity 0.3s;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-}
 `);
 
 // 创建设置面板
@@ -139,33 +131,29 @@ function createSettingsPanel() {
             <h3 style="margin: 0;">Emby 设置</h3>
             <span class="emby-settings-close">&times;</span>
         </div>
-
+ 
         <div class="emby-settings-field">
             <label for="emby-url">Emby 服务器地址</label>
             <input type="text" id="emby-url" placeholder="例如: http://192.168.1.100:8096/" value="${config.embyBaseUrl}">
             <small style="color:#666;">请确保包含http://或https://前缀和最后的斜杠 /</small>
         </div>
-
+ 
         <div class="emby-settings-field">
             <label for="emby-api">Emby API密钥</label>
             <input type="text" id="emby-api" placeholder="在Emby设置中获取API密钥" value="${config.embyAPI}">
         </div>
-
+ 
         <div class="emby-settings-field">
             <label for="highlight-color">高亮颜色</label>
             <input type="color" id="highlight-color" value="${config.highlightColor}">
         </div>
-
+ 
         <div class="emby-settings-field">
             <label for="max-requests">最大并发请求数</label>
             <input type="number" id="max-requests" min="1" max="100" value="${config.maxConcurrentRequests}">
+            <small style="color:#666;">因为是本地请求，可以设置较大值</small>
         </div>
-        
-        <div class="emby-settings-field">
-            <label for="cache-ttl">缓存有效期(天)</label>
-            <input type="number" id="cache-ttl" min="1" max="30" value="${config.cacheTTL}">
-        </div>
-
+ 
         <div class="emby-settings-buttons">
             <button class="emby-settings-cancel">取消</button>
             <button class="emby-settings-save">保存</button>
@@ -189,7 +177,6 @@ function createSettingsPanel() {
             embyAPI: document.getElementById('emby-api').value,
             highlightColor: document.getElementById('highlight-color').value,
             maxConcurrentRequests: parseInt(document.getElementById('max-requests').value, 10),
-            cacheTTL: parseInt(document.getElementById('cache-ttl').value, 10)
         };
 
         // 验证URL格式
@@ -228,80 +215,8 @@ GM_registerMenuCommand("Emby 设置", createSettingsPanel);
 
     // 配置和缓存
     const config = getConfig();
+    const embyCache = new Map(); // 缓存Emby查询结果
     const processedElements = new WeakSet(); // 使用WeakSet跟踪已处理元素
-
-    // 日志函数
-    function logInfo(message) {
-        console.log(`[Emby跳转] ${message}`);
-    }
-
-    function logError(message) {
-        console.error(`[Emby跳转] ${message}`);
-    }
-
-    // 初始化缓存
-    let embyCache;
-    try {
-        const savedCache = GM_getValue('embyCache', '{}');
-        embyCache = new Map(Object.entries(JSON.parse(savedCache)));
-
-        // 清理过期缓存项
-        const now = Date.now();
-        const CACHE_EXPIRY = config.cacheTTL * 24 * 60 * 60 * 1000;
-
-        let expiredCount = 0;
-        for (const [key, item] of embyCache.entries()) {
-            if (!item.timestamp || (now - item.timestamp > CACHE_EXPIRY)) {
-                embyCache.delete(key);
-                expiredCount++;
-            }
-        }
-
-        logInfo(`缓存初始化完成，清理了${expiredCount}个过期条目，当前缓存项数：${embyCache.size}`);
-    } catch (e) {
-        logError(`初始化缓存失败: ${e.message}`);
-        embyCache = new Map();
-    }
-
-    // 定期保存缓存
-    setInterval(() => {
-        try {
-            const cacheObj = Object.fromEntries(embyCache);
-            GM_setValue('embyCache', JSON.stringify(cacheObj));
-            logInfo(`缓存已保存，共${embyCache.size}项`);
-        } catch (e) {
-            logError(`保存缓存失败: ${e.message}`);
-        }
-    }, 60000);
-
-    // 进度指示器
-    function showProgress(message, percent = -1) {
-        let progressBar = document.getElementById('emby-progress-bar');
-
-        if (!progressBar) {
-            progressBar = document.createElement('div');
-            progressBar.id = 'emby-progress-bar';
-            document.body.appendChild(progressBar);
-        }
-
-        if (message === null) {
-            // 隐藏进度条
-            progressBar.style.opacity = '0';
-            setTimeout(() => {
-                if (progressBar.parentNode) {
-                    progressBar.parentNode.removeChild(progressBar);
-                }
-            }, 300);
-            return;
-        }
-
-        progressBar.style.opacity = '1';
-        if (percent >= 0) {
-            progressBar.innerHTML = `${message} (${Math.round(percent)}%)`;
-        } else {
-            progressBar.textContent = message;
-        }
-    }
 
     // 从标题中提取番号的辅助函数
     function extractCodesFromTitle(title) {
@@ -360,37 +275,18 @@ GM_registerMenuCommand("Emby 设置", createSettingsPanel);
     class EmbyAPI {
         constructor() {
             this.config = getConfig();
-            this.cacheHits = 0;
-            this.cacheMisses = 0;
         }
 
         // 查询Emby数据
         async fetchEmbyData(code) {
-            logInfo(`查询番号: ${code}`);
-
             // 检查缓存
             if (embyCache.has(code)) {
-                this.cacheHits++;
-                logInfo(`缓存命中: ${code}`);
-                return embyCache.get(code).data;
+                return embyCache.get(code);
             }
-
-            this.cacheMisses++;
-            showProgress(`查询中: ${code}`);
 
             try {
                 const encodedCode = encodeURIComponent(code.trim());
-                // 根据番号格式选择API端点
-                let url;
-                if (code.match(/^[a-zA-Z]+-\d+$/i) || code.match(/^FC2-PPV-\d+$/i)) {
-                    // 标准番号格式，使用ItemsByName
-                    url = `${this.config.embyBaseUrl}emby/Items/ItemsByName?name=${encodedCode}&api_key=${this.config.embyAPI}&Recursive=true&IncludeItemTypes=Movie`;
-                    logInfo(`使用精确搜索API: ${code}`);
-                } else {
-                    // 其他格式，使用标准搜索
-                    url = `${this.config.embyBaseUrl}emby/Users/${this.config.embyAPI}/Items?api_key=${this.config.embyAPI}&Recursive=true&IncludeItemTypes=Movie&SearchTerm=${encodedCode}`;
-                    logInfo(`使用标准搜索API: ${code}`);
-                }
+                const url = `${this.config.embyBaseUrl}emby/Users/${this.config.embyAPI}/Items?api_key=${this.config.embyAPI}&Recursive=true&IncludeItemTypes=Movie&SearchTerm=${encodedCode}`;
 
                 const response = await new Promise((resolve, reject) => {
                     GM_xmlhttpRequest({
@@ -411,29 +307,17 @@ GM_registerMenuCommand("Emby 设置", createSettingsPanel);
                 });
 
                 const data = JSON.parse(response.responseText);
-                logInfo(`${code} 搜索结果: 找到 ${data.Items?.length || 0} 个匹配项`);
-
-                // 更新缓存
-                embyCache.set(code, {
-                    data: data,
-                    timestamp: Date.now()
-                });
-
+                embyCache.set(code, data); // 缓存结果
                 return data;
             } catch (error) {
-                logError(`查询失败 ${code}: ${error.message}`);
+                console.error(`Error fetching data for ${code}:`, error);
                 return { Items: [] };
-            } finally {
-                showProgress(null);
             }
         }
 
         // 插入Emby链接
         insertEmbyLink(targetElement, data) {
-            if (!targetElement || !data || !data.Items || data.Items.length === 0) {
-                logInfo('无法插入Emby链接: 无匹配结果或目标元素无效');
-                return;
-            }
+            if (!targetElement || !data || !data.Items || data.Items.length === 0) return;
 
             try {
                 // 只处理第一个匹配项
@@ -442,15 +326,11 @@ GM_registerMenuCommand("Emby 设置", createSettingsPanel);
 
                 // 确保目标元素是DOM元素
                 const domElement = targetElement.nodeType ? targetElement : targetElement[0];
-                if (!domElement) {
-                    logInfo('DOM元素无效，无法插入链接');
-                    return;
-                }
+                if (!domElement) return;
 
                 // 检查是否已有链接
                 const parentElement = domElement.parentElement || domElement;
                 if (parentElement.querySelector && parentElement.querySelector(`a[href="${embyUrl}"]`)) {
-                    logInfo(`已存在链接，跳过插入: ${item.Name}`);
                     return;
                 }
 
@@ -474,10 +354,9 @@ GM_registerMenuCommand("Emby 设置", createSettingsPanel);
                         videoItem.style.borderColor = this.config.highlightColor;
                         videoItem.style.backgroundColor = this.config.highlightColor + "22";
                     }
-                    logInfo(`成功标记并添加链接: ${item.Name}`);
                 }
             } catch (error) {
-                logError(`插入Emby链接时出错: ${error.message}`);
+                console.error('插入Emby链接时出错:', error);
             }
         }
     }
@@ -511,8 +390,6 @@ GM_registerMenuCommand("Emby 设置", createSettingsPanel);
                 // 列表页处理
                 const listItems = $('.item.masonry-brick, #waterfall .item');
                 if (listItems.length > 0) {
-                    logInfo(`发现列表项: ${listItems.length}个`);
-
                     const promises = Array.from(listItems).map(item => {
                         if (processedElements.has(item)) return Promise.resolve();
                         processedElements.add(item);
@@ -520,14 +397,10 @@ GM_registerMenuCommand("Emby 设置", createSettingsPanel);
                         const fanhao = $$('.item date', item)?.textContent?.trim();
                         if (!fanhao) return Promise.resolve();
 
-                        logInfo(`识别到番号: ${fanhao}`);
-
                         return requestQueue.add(async () => {
                             const data = await api.fetchEmbyData(fanhao);
                             if (data.Items?.length > 0) {
                                 api.insertEmbyLink($$('.item date', item), data);
-                            } else {
-                                logInfo(`${fanhao} 在Emby中未找到匹配`);
                             }
                         });
                     });
@@ -542,12 +415,9 @@ GM_registerMenuCommand("Emby 设置", createSettingsPanel);
                     if (spans.length > 1) {
                         const code = spans[1].textContent?.trim();
                         if (code) {
-                            logInfo(`详情页识别到番号: ${code}`);
                             const data = await api.fetchEmbyData(code);
                             if (data.Items?.length > 0) {
                                 api.insertEmbyLink(spans[1], data);
-                            } else {
-                                logInfo(`${code} 在Emby中未找到匹配`);
                             }
                         }
                     }
@@ -565,8 +435,6 @@ GM_registerMenuCommand("Emby 设置", createSettingsPanel);
                 // 列表页处理
                 const listItems = $('.movie-list .item, .grid-item');
                 if (listItems.length > 0) {
-                    logInfo(`发现列表项: ${listItems.length}个`);
-
                     const promises = Array.from(listItems).map(item => {
                         if (processedElements.has(item)) return Promise.resolve();
                         processedElements.add(item);
@@ -577,14 +445,10 @@ GM_registerMenuCommand("Emby 设置", createSettingsPanel);
                         const code = titleElement.textContent.trim();
                         if (!code) return Promise.resolve();
 
-                        logInfo(`识别到番号: ${code}`);
-
                         return requestQueue.add(async () => {
                             const data = await api.fetchEmbyData(code);
                             if (data.Items?.length > 0) {
                                 api.insertEmbyLink(titleElement, data);
-                            } else {
-                                logInfo(`${code} 在Emby中未找到匹配`);
                             }
                         });
                     });
@@ -598,12 +462,9 @@ GM_registerMenuCommand("Emby 设置", createSettingsPanel);
                 if (detailElement) {
                     const code = detailElement.textContent.trim().split(' ')[0];
                     if (code) {
-                        logInfo(`详情页识别到番号: ${code}`);
                         const data = await api.fetchEmbyData(code);
                         if (data.Items?.length > 0) {
                             api.insertEmbyLink(detailElement, data);
-                        } else {
-                            logInfo(`${code} 在Emby中未找到匹配`);
                         }
                     }
                 }
@@ -621,27 +482,21 @@ GM_registerMenuCommand("Emby 设置", createSettingsPanel);
                 const codes = extractCodesFromTitle(title);
 
                 if (codes.length > 0) {
-                    logInfo(`从标题中提取到番号: ${codes.join(', ')}`);
-
                     const promises = codes.map(code => {
                         return requestQueue.add(async () => {
                             const data = await api.fetchEmbyData(code);
                             if (data.Items?.length > 0) {
-                                const container = $('#thread_subject')[0] ||
-                                    $('h1.ts')[0] ||
-                                    $('h1')[0];
+                                const container = $('#thread_subject') ||
+                                    $('h1.ts') ||
+                                    $('h1');
                                 if (container) {
                                     api.insertEmbyLink(container, data);
                                 }
-                            } else {
-                                logInfo(`${code} 在Emby中未找到匹配`);
                             }
                         });
                     });
 
                     await Promise.all(promises);
-                } else {
-                    logInfo('从标题中未提取到番号: ' + title);
                 }
             }
         }
@@ -649,11 +504,11 @@ GM_registerMenuCommand("Emby 设置", createSettingsPanel);
 
     // 主函数
     async function main() {
-        logInfo('脚本启动 (优化版)');
+        console.log('Emby跳转脚本启动 (优化版)');
 
         // 检查API配置
         if (!config.embyAPI) {
-            logInfo('Emby API未配置');
+            console.log('Emby API未配置');
             setTimeout(() => {
                 alert('请先设置您的Emby服务器地址和API密钥');
                 createSettingsPanel();
@@ -664,32 +519,14 @@ GM_registerMenuCommand("Emby 设置", createSettingsPanel);
         // 初始化API
         const api = new EmbyAPI();
 
-        // 记录开始时间
-        const startTime = performance.now();
-
         // 识别当前站点并处理
-        let siteDetected = false;
         for (const [site, strategy] of Object.entries(siteStrategies)) {
             if (strategy.detect()) {
-                siteDetected = true;
-                logInfo(`检测到站点: ${site}`);
+                console.log(`检测到站点: ${site}`);
                 await strategy.process(api);
                 break;
             }
         }
-
-        if (!siteDetected) {
-            logInfo('未检测到支持的站点');
-        }
-
-        // 计算总耗时
-        const totalTime = performance.now() - startTime;
-        logInfo(`处理完成，总耗时: ${totalTime.toFixed(2)}ms`);
-
-        // 输出缓存统计
-        const hitRate = (api.cacheHits > 0 || api.cacheMisses > 0) ?
-            (api.cacheHits / (api.cacheHits + api.cacheMisses) * 100).toFixed(2) + '%' : '0%';
-        logInfo(`缓存统计 - 命中: ${api.cacheHits}, 未命中: ${api.cacheMisses}, 命中率: ${hitRate}`);
     }
 
     // 启动脚本

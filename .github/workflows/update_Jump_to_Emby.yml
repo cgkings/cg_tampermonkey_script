@@ -1,9 +1,9 @@
-name: Update Emby MediaInfo Assistant to Greasy Fork
+name: Update Jump to Emby to Greasy Fork
 
 on:
   push:
     tags:
-      - 'mediainfo-v*' # 只针对mediainfo标签触发
+      - 'jump_to_emby_v*' # 只针对jump标签触发
 
 jobs:
   update-greasy-fork:
@@ -23,11 +23,11 @@ jobs:
         id: extract_info
         run: |
           # 提取版本号
-          VERSION=${GITHUB_REF#refs/tags/mediainfo-v}
+          VERSION=${GITHUB_REF#refs/tags/jump_to_emby_v}
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           
           # 提取标签消息作为更新日志
-          TAG_MESSAGE=$(git tag -l --format='%(contents)' mediainfo-v$VERSION)
+          TAG_MESSAGE=$(git tag -l --format='%(contents)' jump_to_emby_v$VERSION)
           # 格式化为GitHub Actions可用的格式
           TAG_MESSAGE="${TAG_MESSAGE//$'\n'/'%0A'}"
           echo "CHANGELOG=$TAG_MESSAGE" >> $GITHUB_OUTPUT
@@ -35,33 +35,33 @@ jobs:
       - name: Update script and changelog
         run: |
           # 更新版本号
-          sed -i "s/\/\/ @version      .*$/\/\/ @version      ${{ steps.extract_info.outputs.VERSION }}/" scripts/Emby_MediaInfo_Assistant/Emby_MediaInfo_Assistant.user.js
+          sed -i "s/\/\/ @version      .*$/\/\/ @version      ${{ steps.extract_info.outputs.VERSION }}/" scripts/Jump_to_Emby/Jump_to_Emby.user.js
           
           # 更新CHANGELOG.md文件
           CHANGELOG_CONTENT=$(echo "${{ steps.extract_info.outputs.CHANGELOG }}" | sed 's/%0A/\n/g')
-          if [ -f "scripts/Emby_MediaInfo_Assistant/CHANGELOG.md" ]; then
-            echo -e "### v${{ steps.extract_info.outputs.VERSION }}\n${CHANGELOG_CONTENT}\n\n$(cat scripts/Emby_MediaInfo_Assistant/CHANGELOG.md)" > scripts/Emby_MediaInfo_Assistant/CHANGELOG.md.tmp
-            mv scripts/Emby_MediaInfo_Assistant/CHANGELOG.md.tmp scripts/Emby_MediaInfo_Assistant/CHANGELOG.md
+          if [ -f "scripts/Jump_to_Emby/CHANGELOG.md" ]; then
+            echo -e "### v${{ steps.extract_info.outputs.VERSION }}\n${CHANGELOG_CONTENT}\n\n$(cat scripts/Jump_to_Emby/CHANGELOG.md)" > scripts/Jump_to_Emby/CHANGELOG.md.tmp
+            mv scripts/Jump_to_Emby/CHANGELOG.md.tmp scripts/Jump_to_Emby/CHANGELOG.md
           else
-            echo -e "# Emby MediaInfo Assistant 更新日志\n\n### v${{ steps.extract_info.outputs.VERSION }}\n${CHANGELOG_CONTENT}" > scripts/Emby_MediaInfo_Assistant/CHANGELOG.md
+            echo -e "# Jump to Emby 更新日志\n\n### v${{ steps.extract_info.outputs.VERSION }}\n${CHANGELOG_CONTENT}" > scripts/Jump_to_Emby/CHANGELOG.md
           fi
           
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
-          git add scripts/Emby_MediaInfo_Assistant/Emby_MediaInfo_Assistant.user.js scripts/Emby_MediaInfo_Assistant/CHANGELOG.md
+          git add scripts/Jump_to_Emby/Jump_to_Emby.user.js scripts/Jump_to_Emby/CHANGELOG.md
           git commit -m "Update version to ${{ steps.extract_info.outputs.VERSION }} and update changelog" || echo "No changes to commit"
           git push origin main
       
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          name: Emby MediaInfo Assistant v${{ steps.extract_info.outputs.VERSION }}
+          name: Jump to Emby v${{ steps.extract_info.outputs.VERSION }}
           body: |
-            Emby MediaInfo Assistant v${{ steps.extract_info.outputs.VERSION }} 发布了！
+            Jump to Emby v${{ steps.extract_info.outputs.VERSION }} 发布了！
             
             ## 更新内容
             ${{ steps.extract_info.outputs.CHANGELOG }}
           files: |
-            scripts/Emby_MediaInfo_Assistant/Emby_MediaInfo_Assistant.user.js
+            scripts/Jump_to_Emby/Jump_to_Emby.user.js
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
