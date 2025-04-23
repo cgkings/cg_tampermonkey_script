@@ -1,26 +1,21 @@
-name: Update Jump to Emby to Greasy Fork
+name: Create Release for Jump to Emby
 
 on:
   push:
     tags:
-      - 'jump_to_emby_v*' # 只针对jump标签触发
+      - 'jump_to_emby_v*'
 
 permissions:
   contents: write
 
 jobs:
-  update-greasy-fork:
+  create-release:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
         with:
-          fetch-depth: 0  # 获取完整的Git历史，确保能访问标签信息
-          
-      - name: Set up Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: '18'
+          fetch-depth: 0
           
       - name: Extract version and changelog
         id: extract_info
@@ -31,45 +26,8 @@ jobs:
           
           # 提取标签消息作为更新日志
           TAG_MESSAGE=$(git tag -l --format='%(contents)' jump_to_emby_v$VERSION)
-          # 格式化为GitHub Actions可用的格式
           TAG_MESSAGE="${TAG_MESSAGE//$'\n'/'%0A'}"
           echo "CHANGELOG=$TAG_MESSAGE" >> $GITHUB_OUTPUT
-          
-      - name: Update script and changelog
-        run: |
-          # 获取远程分支信息
-          git fetch origin
-          
-          # 创建新的临时分支来处理更新
-          git branch -a
-          git checkout -b temp-branch
-          
-          # 确保我们有最新的main分支内容
-          git fetch origin main:main || echo "Cannot fetch main branch"
-          git checkout main || git checkout -b main
-
-          # 更新版本号
-          sed -i "s/\/\/ @version      .*$/\/\/ @version      ${{ steps.extract_info.outputs.VERSION }}/" scripts/Jump_to_Emby/Jump_to_Emby.user.js
-          
-          # 更新CHANGELOG.md文件
-          CHANGELOG_CONTENT=$(echo "${{ steps.extract_info.outputs.CHANGELOG }}" | sed 's/%0A/\n/g')
-          if [ -f "scripts/Jump_to_Emby/CHANGELOG.md" ]; then
-            echo -e "### v${{ steps.extract_info.outputs.VERSION }}\n${CHANGELOG_CONTENT}\n\n$(cat scripts/Jump_to_Emby/CHANGELOG.md)" > scripts/Jump_to_Emby/CHANGELOG.md.tmp
-            mv scripts/Jump_to_Emby/CHANGELOG.md.tmp scripts/Jump_to_Emby/CHANGELOG.md
-          else
-            echo -e "# Jump to Emby 更新日志\n\n### v${{ steps.extract_info.outputs.VERSION }}\n${CHANGELOG_CONTENT}" > scripts/Jump_to_Emby/CHANGELOG.md
-          fi
-          
-          git config --global user.name "GitHub Actions"
-          git config --global user.email "actions@github.com"
-          git add scripts/Jump_to_Emby/Jump_to_Emby.user.js scripts/Jump_to_Emby/CHANGELOG.md
-          git commit -m "Update version to ${{ steps.extract_info.outputs.VERSION }} and update changelog" || echo "No changes to commit"
-          
-          # 使用GITHUB_TOKEN进行验证，这样能正确推送
-          git remote set-url origin https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
-          
-          # 将更改推送到main分支
-          git push -f origin main
           
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
