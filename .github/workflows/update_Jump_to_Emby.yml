@@ -37,10 +37,17 @@ jobs:
           
       - name: Update script and changelog
         run: |
-          # 先检查并创建或切换到main分支
+          # 获取远程分支信息
           git fetch origin
-          git checkout main || git checkout -b main
           
+          # 创建新的临时分支来处理更新
+          git branch -a
+          git checkout -b temp-branch
+          
+          # 确保我们有最新的main分支内容
+          git fetch origin main:main || echo "Cannot fetch main branch"
+          git checkout main || git checkout -b main
+
           # 更新版本号
           sed -i "s/\/\/ @version      .*$/\/\/ @version      ${{ steps.extract_info.outputs.VERSION }}/" scripts/Jump_to_Emby/Jump_to_Emby.user.js
           
@@ -58,7 +65,10 @@ jobs:
           git add scripts/Jump_to_Emby/Jump_to_Emby.user.js scripts/Jump_to_Emby/CHANGELOG.md
           git commit -m "Update version to ${{ steps.extract_info.outputs.VERSION }} and update changelog" || echo "No changes to commit"
           
-          # 确保我们能推送到远程
+          # 使用GITHUB_TOKEN进行验证，这样能正确推送
+          git remote set-url origin https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          
+          # 将更改推送到main分支
           git push -f origin main
           
       - name: Create GitHub Release
