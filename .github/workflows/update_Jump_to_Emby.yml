@@ -16,7 +16,6 @@ jobs:
         uses: actions/checkout@v3
         with:
           fetch-depth: 0  # 获取完整的Git历史，确保能访问标签信息
-          ref: main  # 明确指定检出main分支
           
       - name: Set up Node.js
         uses: actions/setup-node@v3
@@ -38,6 +37,10 @@ jobs:
           
       - name: Update script and changelog
         run: |
+          # 先检查并创建或切换到main分支
+          git fetch origin
+          git checkout main || git checkout -b main
+          
           # 更新版本号
           sed -i "s/\/\/ @version      .*$/\/\/ @version      ${{ steps.extract_info.outputs.VERSION }}/" scripts/Jump_to_Emby/Jump_to_Emby.user.js
           
@@ -52,10 +55,11 @@ jobs:
           
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
-          git checkout main  # 确保在main分支上
           git add scripts/Jump_to_Emby/Jump_to_Emby.user.js scripts/Jump_to_Emby/CHANGELOG.md
           git commit -m "Update version to ${{ steps.extract_info.outputs.VERSION }} and update changelog" || echo "No changes to commit"
-          git push origin main
+          
+          # 确保我们能推送到远程
+          git push -f origin main
           
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
