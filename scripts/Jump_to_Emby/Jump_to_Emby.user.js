@@ -1,8 +1,7 @@
 // ==UserScript==
 // @name         跳转到Emby播放
-// @name:en      Jump to Emby Player
 // @namespace    https://github.com/cgkings
-// @version      0.0.1
+// @version      0.0.2
 // @description  👆👆👆👆👆👆👆在 ✅JavBus✅Javdb✅Sehuatang 高亮emby存在的视频，并提供标注一键跳转功能
 // @author       cgkings
 // @match        *://www.javbus.com/*
@@ -32,7 +31,7 @@ const DEFAULT_CONFIG = {
     embyAPI: "",
     embyBaseUrl: "http://localhost:8096/",
     highlightColor: "#52b54b",
-    maxConcurrentRequests: 50, // 增加了最大并发请求数
+    maxConcurrentRequests: 50, // 并发请求数
 };
 
 // 获取用户配置或使用默认值
@@ -45,7 +44,7 @@ function getConfig() {
     };
 }
 
-// 添加配置UI样式
+// 添加UI样式
 GM_addStyle(`
 .emby-settings-panel {
     position: fixed;
@@ -108,6 +107,45 @@ GM_addStyle(`
 .emby-settings-cancel {
     background-color: #f0f0f0;
     color: #333;
+}
+ 
+/* 状态指示器样式 */
+.emby-status-indicator {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background-color: rgba(0, 0, 0, 0.7);
+    color: white;
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: 14px;
+    z-index: 9999;
+    transition: opacity 0.3s;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    max-width: 300px;
+    display: flex;
+    align-items: center;
+    opacity: 1;
+}
+.emby-status-indicator .progress {
+    display: inline-block;
+    margin-left: 10px;
+    width: 100px;
+    height: 6px;
+    background: rgba(255, 255, 255, 0.3);
+    border-radius: 3px;
+}
+.emby-status-indicator .progress-bar {
+    height: 100%;
+    background: #52b54b;
+    border-radius: 3px;
+    transition: width 0.3s;
+}
+.emby-status-indicator.success {
+    background-color: rgba(82, 181, 75, 0.9);
+}
+.emby-status-indicator.error {
+    background-color: rgba(220, 53, 69, 0.9);
 }
 `);
 
@@ -200,6 +238,101 @@ function createSettingsPanel() {
 // 注册菜单命令
 GM_registerMenuCommand("Emby 设置", createSettingsPanel);
 
+// 单例状态指示器
+const statusIndicator = (() => {
+    let instance = null;
+
+    class StatusIndicator {
+        constructor() {
+            this.element = null;
+            this.progressBar = null;
+            this.timeout = null;
+            this.total = 0;
+            this.current = 0;
+        }
+
+        init() {
+            if (this.element) return;
+
+            this.element = document.createElement('div');
+            this.element.className = 'emby-status-indicator';
+            this.element.innerHTML = `
+                <span class="status-text">准备中...</span>
+                <div class="progress">
+                    <div class="progress-bar" style="width: 0%"></div>
+                </div>
+            `;
+            document.body.appendChild(this.element);
+            this.progressBar = this.element.querySelector('.progress-bar');
+        }
+
+        show(message, type = '') {
+            this.init();
+
+            if (this.timeout) {
+                clearTimeout(this.timeout);
+                this.timeout = null;
+            }
+
+            this.element.className = 'emby-status-indicator ' + type;
+            this.element.querySelector('.status-text').textContent = message;
+            this.element.style.opacity = '1';
+        }
+
+        updateProgress(current, total) {
+            this.current = current;
+            this.total = total;
+
+            const percent = Math.min(Math.round((current / total) * 100), 100);
+            this.progressBar.style.width = `${percent}%`;
+            this.show(`查询中: ${current}/${total} (${percent}%)`);
+        }
+
+        success(message, autoHide = true) {
+            this.show(message, 'success');
+            if (autoHide) {
+                this.timeout = setTimeout(() => this.hide(), 3000);
+            }
+        }
+
+        error(message, autoHide = true) {
+            this.show(message, 'error');
+            if (autoHide) {
+                this.timeout = setTimeout(() => this.hide(), 5000);
+            }
+        }
+
+        hide() {
+            if (!this.element) return;
+            this.element.style.opacity = '0';
+            this.timeout = setTimeout(() => {
+                if (this.element && this.element.parentNode) {
+                    this.element.parentNode.removeChild(this.element);
+                }
+                this.element = null;
+                this.progressBar = null;
+            }, 300);
+        }
+
+        reset() {
+            this.current = 0;
+            this.total = 0;
+            if (this.progressBar) {
+                this.progressBar.style.width = '0%';
+            }
+        }
+    }
+
+    return {
+        getInstance: function () {
+            if (!instance) {
+                instance = new StatusIndicator();
+            }
+            return instance;
+        }
+    };
+})();
+
 (function () {
     'use strict';
 
@@ -242,43 +375,112 @@ GM_registerMenuCommand("Emby 设置", createSettingsPanel);
         return results;
     }
 
-    // 队列管理 - 使用Promise.all控制并发
+    // 寻找视频项容器
+    function findVideoItemContainer(element) {
+        let current = element;
+        const containerClasses = ['item', 'masonry-brick', 'grid-item', 'movie-list'];
+
+        while (current && current !== document.body) {
+            for (const className of containerClasses) {
+                if (current.classList && current.classList.contains(className)) {
+                    return current;
+                }
+            }
+            current = current.parentElement;
+        }
+
+        return element;
+    }
+
+    // 请求队列类
     class RequestQueue {
         constructor(maxConcurrent = 50) {
             this.maxConcurrent = maxConcurrent;
-            this.activeRequests = 0;
-            this.queue = [];
+            this.active = 0;
+            this.waiting = [];
+            this.results = [];
+            this.status = statusIndicator.getInstance();
+            this.totalRequests = 0;
+            this.completedRequests = 0;
         }
 
-        async add(fn) {
-            if (this.activeRequests >= this.maxConcurrent) {
-                // 等待队列中的一个请求完成
-                await new Promise(resolve => this.queue.push(resolve));
-            }
+        start(requests) {
+            this.totalRequests = requests.length;
+            this.completedRequests = 0;
+            this.results = new Array(this.totalRequests);
 
-            this.activeRequests++;
-            try {
-                return await fn();
-            } finally {
-                this.activeRequests--;
-                if (this.queue.length > 0) {
-                    const next = this.queue.shift();
-                    next();
+            if (this.totalRequests === 0) return Promise.resolve([]);
+
+            this.status.show(`开始查询: 共${this.totalRequests}个项目`);
+
+            return new Promise((resolve) => {
+                // 检查是否完成
+                const checkComplete = () => {
+                    if (this.completedRequests >= this.totalRequests && this.active === 0) {
+                        const foundCount = this.results.filter(r => r && r.Items && r.Items.length > 0).length;
+                        this.status.success(`查询完成: 找到${foundCount}个匹配项`, true);
+                        resolve(this.results);
+                    }
+                };
+
+                // 处理单个请求
+                const processRequest = (index) => {
+                    const request = requests[index];
+                    this.active++;
+
+                    // 更新进度
+                    this.status.updateProgress(this.completedRequests, this.totalRequests);
+
+                    request().then(result => {
+                        this.results[index] = result;
+                        this.active--;
+                        this.completedRequests++;
+
+                        // 处理等待队列中的下一个请求
+                        if (this.waiting.length > 0) {
+                            const nextIndex = this.waiting.shift();
+                            processRequest(nextIndex);
+                        }
+
+                        checkComplete();
+                    }).catch(error => {
+                        console.error('请求错误:', error);
+                        this.results[index] = null;
+                        this.active--;
+                        this.completedRequests++;
+
+                        // 处理等待队列中的下一个请求
+                        if (this.waiting.length > 0) {
+                            const nextIndex = this.waiting.shift();
+                            processRequest(nextIndex);
+                        }
+
+                        checkComplete();
+                    });
+                };
+
+                // 开始处理请求
+                for (let i = 0; i < this.totalRequests; i++) {
+                    if (this.active < this.maxConcurrent) {
+                        processRequest(i);
+                    } else {
+                        this.waiting.push(i);
+                    }
                 }
-            }
+            });
         }
     }
 
-    const requestQueue = new RequestQueue(config.maxConcurrentRequests);
-
-    // Emby API基础类
+    // Emby API类
     class EmbyAPI {
         constructor() {
-            this.config = getConfig();
+            this.config = config;
         }
 
-        // 查询Emby数据
+        // 查询单个番号
         async fetchEmbyData(code) {
+            if (!code) return { Items: [] };
+
             // 检查缓存
             if (embyCache.has(code)) {
                 return embyCache.get(code);
@@ -286,33 +488,54 @@ GM_registerMenuCommand("Emby 设置", createSettingsPanel);
 
             try {
                 const encodedCode = encodeURIComponent(code.trim());
-                const url = `${this.config.embyBaseUrl}emby/Users/${this.config.embyAPI}/Items?api_key=${this.config.embyAPI}&Recursive=true&IncludeItemTypes=Movie&SearchTerm=${encodedCode}`;
+                const url = `${this.config.embyBaseUrl}emby/Users/${this.config.embyAPI}/Items?api_key=${this.config.embyAPI}&Recursive=true&IncludeItemTypes=Movie&SearchTerm=${encodedCode}&Fields=Name,Id,ServerId`;
 
-                const response = await new Promise((resolve, reject) => {
-                    GM_xmlhttpRequest({
-                        method: "GET",
-                        url: url,
-                        headers: { accept: "application/json" },
-                        onload: (res) => {
-                            if (res.status >= 200 && res.status < 300) {
-                                resolve(res);
-                            } else {
-                                reject(new Error(`HTTP error: ${res.status}`));
-                            }
-                        },
-                        onerror: (e) => {
-                            reject(new Error("Error fetching Emby data"));
-                        }
-                    });
-                });
-
+                const response = await this.makeRequest(url);
                 const data = JSON.parse(response.responseText);
                 embyCache.set(code, data); // 缓存结果
                 return data;
             } catch (error) {
-                console.error(`Error fetching data for ${code}:`, error);
+                console.error(`查询数据出错 ${code}:`, error);
                 return { Items: [] };
             }
+        }
+
+        // 通用请求方法
+        makeRequest(url) {
+            return new Promise((resolve, reject) => {
+                GM_xmlhttpRequest({
+                    method: "GET",
+                    url: url,
+                    headers: { accept: "application/json" },
+                    timeout: 10000, // 10秒超时
+                    onload: (res) => {
+                        if (res.status >= 200 && res.status < 300) {
+                            resolve(res);
+                        } else {
+                            reject(new Error(`HTTP错误: ${res.status}`));
+                        }
+                    },
+                    onerror: (e) => {
+                        reject(new Error("请求错误"));
+                    },
+                    ontimeout: () => {
+                        reject(new Error("请求超时"));
+                    }
+                });
+            });
+        }
+
+        // 批量查询多个番号
+        async batchQuery(codes) {
+            const requestQueue = new RequestQueue(this.config.maxConcurrentRequests);
+
+            // 创建请求函数数组
+            const requests = codes.map(code => {
+                return () => this.fetchEmbyData(code);
+            });
+
+            // 启动批量查询
+            return await requestQueue.start(requests);
         }
 
         // 插入Emby链接
@@ -320,7 +543,6 @@ GM_registerMenuCommand("Emby 设置", createSettingsPanel);
             if (!targetElement || !data || !data.Items || data.Items.length === 0) return;
 
             try {
-                // 只处理第一个匹配项
                 const item = data.Items[0];
                 const embyUrl = `${this.config.embyBaseUrl}web/index.html#!/item?id=${item.Id}&serverId=${item.ServerId}`;
 
@@ -361,21 +583,47 @@ GM_registerMenuCommand("Emby 设置", createSettingsPanel);
         }
     }
 
-    // 寻找视频项容器 (向上查找最近的容器元素)
-    function findVideoItemContainer(element) {
-        let current = element;
-        const containerClasses = ['item', 'masonry-brick', 'grid-item', 'movie-list'];
+    // 处理站点的共用方法
+    function processListItems(items, getCodeFn, getElementFn, api) {
+        return new Promise(async (resolve) => {
+            if (items.length === 0) {
+                resolve();
+                return;
+            }
 
-        while (current && current !== document.body) {
-            for (const className of containerClasses) {
-                if (current.classList && current.classList.contains(className)) {
-                    return current;
+            const status = statusIndicator.getInstance();
+            status.show(`正在收集番号: 共${items.length}个项目`);
+
+            // 收集番号
+            const itemsToProcess = [];
+            const codes = [];
+
+            Array.from(items).forEach(item => {
+                if (processedElements.has(item)) return;
+                processedElements.add(item);
+
+                const code = getCodeFn(item);
+                const element = getElementFn(item);
+
+                if (code && element) {
+                    itemsToProcess.push({ element, code });
+                    codes.push(code);
+                }
+            });
+
+            if (codes.length > 0) {
+                const results = await api.batchQuery(codes);
+
+                // 处理结果
+                for (let i = 0; i < results.length; i++) {
+                    if (i < itemsToProcess.length && results[i] && results[i].Items && results[i].Items.length > 0) {
+                        api.insertEmbyLink(itemsToProcess[i].element, results[i]);
+                    }
                 }
             }
-            current = current.parentElement;
-        }
 
-        return element; // 如果找不到合适的容器，返回原始元素
+            resolve();
+        });
     }
 
     // 站点处理策略
@@ -387,26 +635,15 @@ GM_registerMenuCommand("Emby 设置", createSettingsPanel);
                     $$('footer')?.textContent?.includes('JavBus');
             },
             process: async (api) => {
+                const status = statusIndicator.getInstance();
+
                 // 列表页处理
                 const listItems = $('.item.masonry-brick, #waterfall .item');
-                if (listItems.length > 0) {
-                    const promises = Array.from(listItems).map(item => {
-                        if (processedElements.has(item)) return Promise.resolve();
-                        processedElements.add(item);
-
-                        const fanhao = $$('.item date', item)?.textContent?.trim();
-                        if (!fanhao) return Promise.resolve();
-
-                        return requestQueue.add(async () => {
-                            const data = await api.fetchEmbyData(fanhao);
-                            if (data.Items?.length > 0) {
-                                api.insertEmbyLink($$('.item date', item), data);
-                            }
-                        });
-                    });
-
-                    await Promise.all(promises);
-                }
+                await processListItems(listItems,
+                    item => $$('.item date', item)?.textContent?.trim(),
+                    item => $$('.item date', item),
+                    api
+                );
 
                 // 详情页处理
                 const infoElement = $$('.col-md-3.info p');
@@ -415,9 +652,13 @@ GM_registerMenuCommand("Emby 设置", createSettingsPanel);
                     if (spans.length > 1) {
                         const code = spans[1].textContent?.trim();
                         if (code) {
+                            status.show('查询中...');
                             const data = await api.fetchEmbyData(code);
                             if (data.Items?.length > 0) {
                                 api.insertEmbyLink(spans[1], data);
+                                status.success('找到匹配项');
+                            } else {
+                                status.error('未找到匹配项');
                             }
                         }
                     }
@@ -432,29 +673,15 @@ GM_registerMenuCommand("Emby 设置", createSettingsPanel);
                     $$('#footer')?.textContent?.includes('javdb');
             },
             process: async (api) => {
+                const status = statusIndicator.getInstance();
+
                 // 列表页处理
                 const listItems = $('.movie-list .item, .grid-item');
-                if (listItems.length > 0) {
-                    const promises = Array.from(listItems).map(item => {
-                        if (processedElements.has(item)) return Promise.resolve();
-                        processedElements.add(item);
-
-                        const titleElement = $$('.video-title strong', item);
-                        if (!titleElement) return Promise.resolve();
-
-                        const code = titleElement.textContent.trim();
-                        if (!code) return Promise.resolve();
-
-                        return requestQueue.add(async () => {
-                            const data = await api.fetchEmbyData(code);
-                            if (data.Items?.length > 0) {
-                                api.insertEmbyLink(titleElement, data);
-                            }
-                        });
-                    });
-
-                    await Promise.all(promises);
-                }
+                await processListItems(listItems,
+                    item => $$('.video-title strong', item)?.textContent?.trim(),
+                    item => $$('.video-title strong', item),
+                    api
+                );
 
                 // 详情页处理
                 const detailElement = $$('body > section > div > div.video-detail > h2 > strong') ||
@@ -462,9 +689,13 @@ GM_registerMenuCommand("Emby 设置", createSettingsPanel);
                 if (detailElement) {
                     const code = detailElement.textContent.trim().split(' ')[0];
                     if (code) {
+                        status.show('查询中...');
                         const data = await api.fetchEmbyData(code);
                         if (data.Items?.length > 0) {
                             api.insertEmbyLink(detailElement, data);
+                            status.success('找到匹配项');
+                        } else {
+                            status.error('未找到匹配项');
                         }
                     }
                 }
@@ -478,25 +709,35 @@ GM_registerMenuCommand("Emby 设置", createSettingsPanel);
                     $('#flk')?.textContent?.includes('色花堂');
             },
             process: async (api) => {
+                const status = statusIndicator.getInstance();
+
                 const title = document.title.trim();
                 const codes = extractCodesFromTitle(title);
 
                 if (codes.length > 0) {
-                    const promises = codes.map(code => {
-                        return requestQueue.add(async () => {
-                            const data = await api.fetchEmbyData(code);
-                            if (data.Items?.length > 0) {
-                                const container = $('#thread_subject') ||
-                                    $('h1.ts') ||
-                                    $('h1');
-                                if (container) {
-                                    api.insertEmbyLink(container, data);
-                                }
-                            }
-                        });
-                    });
+                    status.show(`找到${codes.length}个可能的番号，开始查询...`);
 
-                    await Promise.all(promises);
+                    const results = await api.batchQuery(codes);
+                    let foundAny = false;
+
+                    for (let i = 0; i < results.length; i++) {
+                        const data = results[i];
+                        if (data && data.Items && data.Items.length > 0) {
+                            const container = $$('#thread_subject') ||
+                                $$('h1.ts') ||
+                                $$('h1');
+                            if (container) {
+                                api.insertEmbyLink(container, data);
+                                foundAny = true;
+                            }
+                        }
+                    }
+
+                    if (foundAny) {
+                        status.success('找到匹配项');
+                    } else {
+                        status.error('未找到匹配项');
+                    }
                 }
             }
         }
@@ -505,10 +746,13 @@ GM_registerMenuCommand("Emby 设置", createSettingsPanel);
     // 主函数
     async function main() {
         console.log('Emby跳转脚本启动 (优化版)');
+        const status = statusIndicator.getInstance();
+        status.show('初始化中...');
 
         // 检查API配置
         if (!config.embyAPI) {
             console.log('Emby API未配置');
+            status.error('API未配置');
             setTimeout(() => {
                 alert('请先设置您的Emby服务器地址和API密钥');
                 createSettingsPanel();
@@ -520,12 +764,18 @@ GM_registerMenuCommand("Emby 设置", createSettingsPanel);
         const api = new EmbyAPI();
 
         // 识别当前站点并处理
+        let siteFound = false;
         for (const [site, strategy] of Object.entries(siteStrategies)) {
             if (strategy.detect()) {
-                console.log(`检测到站点: ${site}`);
+                siteFound = true;
+                status.show(`检测到站点: ${site}，开始处理...`);
                 await strategy.process(api);
                 break;
             }
+        }
+
+        if (!siteFound) {
+            status.error('未识别到支持的站点');
         }
     }
 
