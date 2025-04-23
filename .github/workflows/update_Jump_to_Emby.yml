@@ -3,7 +3,15 @@ name: Update Jump to Emby to Greasy Fork
 on:
   push:
     tags:
-      - 'jump_to_emby_v*'
+      - 'jump_to_emby_v*'  # 当推送特定标签时自动触发
+  workflow_dispatch:       # 允许手动触发
+    inputs:
+      version:
+        description: '版本号 (例如: 0.0.1)'
+        required: true
+      changelog:
+        description: '更新内容 (使用换行分隔每条内容)'
+        required: true
 
 permissions:
   contents: write
@@ -20,14 +28,23 @@ jobs:
       - name: Extract version and changelog
         id: extract_info
         run: |
-          # 提取版本号
-          VERSION=${GITHUB_REF#refs/tags/jump_to_emby_v}
-          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
-          
-          # 提取标签消息作为更新日志
-          TAG_MESSAGE=$(git tag -l --format='%(contents)' jump_to_emby_v$VERSION)
-          TAG_MESSAGE="${TAG_MESSAGE//$'\n'/'%0A'}"
-          echo "CHANGELOG=$TAG_MESSAGE" >> $GITHUB_OUTPUT
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # 手动触发时使用输入的版本号和更新日志
+            echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+            # 将输入的更新日志转换为适合GitHub Actions的格式
+            FORMATTED_CHANGELOG=$(echo "${{ github.event.inputs.changelog }}" | sed ':a;N;$!ba;s/\n/%0A/g')
+            echo "CHANGELOG=$FORMATTED_CHANGELOG" >> $GITHUB_OUTPUT
+          else
+            # 自动触发时从标签提取版本号和更新日志
+            VERSION=${GITHUB_REF#refs/tags/jump_to_emby_v}
+            echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+            
+            # 提取标签消息作为更新日志
+            TAG_MESSAGE=$(git tag -l --format='%(contents)' jump_to_emby_v$VERSION)
+            # 格式化为GitHub Actions可用的格式
+            TAG_MESSAGE="${TAG_MESSAGE//$'\n'/'%0A'}"
+            echo "CHANGELOG=$TAG_MESSAGE" >> $GITHUB_OUTPUT
+          fi
           
       - name: Update script version
         run: |
@@ -47,6 +64,9 @@ jobs:
           else
             NEW_CHANGELOG="# Jump to Emby 更新日志\n\n### v${{ steps.extract_info.outputs.VERSION }}\n$(echo "$CHANGELOG_CONTENT" | sed 's/\\n/\\n/g')"
           fi
+          
+          # 安装jq用于解析JSON
+          sudo apt-get install -y jq
           
           # 更新脚本文件
           curl -X PUT \
@@ -92,6 +112,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && format('jump_to_emby_v{0}', github.event.inputs.version) || github.ref }}
           name: Jump to Emby v${{ steps.extract_info.outputs.VERSION }}
           body: |
             Jump to Emby v${{ steps.extract_info.outputs.VERSION }} 发布了！
