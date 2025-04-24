@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         跳转到Emby播放
 // @namespace    https://github.com/cgkings
-// @version      0.0.1
+// @version      0.0.2
 // @description  👆👆👆👆👆👆👆在 ✅JavBus✅Javdb✅Sehuatang 高亮emby存在的视频，并提供标注一键跳转功能！！！
 // @author       cgkings
 // @match        *://www.javbus.com/*
