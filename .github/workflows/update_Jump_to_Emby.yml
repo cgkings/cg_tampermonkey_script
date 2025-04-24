@@ -39,10 +39,18 @@ jobs:
               echo "${{ github.event.inputs.changelog }}" >> $GITHUB_OUTPUT
               echo "EOF" >> $GITHUB_OUTPUT
             else
-              # 从对应版本的标签中提取更新日志
-              TAG_MESSAGE=$(git tag -l --format='%(contents)' jump_to_emby_v${{ github.event.inputs.version }})
-              # 标准化换行符，移除Windows的回车符
-              TAG_MESSAGE=$(echo "$TAG_MESSAGE" | tr -d '\r')
+              # 使用GitHub API获取tag信息
+              echo "通过GitHub API获取tag: jump_to_emby_v${{ github.event.inputs.version }} 的消息"
+              TAG_MESSAGE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                "https://api.github.com/repos/${{ github.repository }}/git/refs/tags/jump_to_emby_v${{ github.event.inputs.version }}" | \
+                jq -r '.object.url' | xargs -I {} curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" {} | \
+                jq -r '.message // "- 版本更新"')
+              
+              # 检查TAG_MESSAGE是否为空或null
+              if [[ -z "$TAG_MESSAGE" || "$TAG_MESSAGE" == "null" ]]; then
+                echo "无法从GitHub API获取tag消息，使用默认内容"
+                TAG_MESSAGE="- 版本更新"
+              fi
               
               echo "DISPLAY_CHANGELOG<<EOF" >> $GITHUB_OUTPUT
               echo "$TAG_MESSAGE" >> $GITHUB_OUTPUT
@@ -53,10 +61,33 @@ jobs:
             VERSION=${GITHUB_REF#refs/tags/jump_to_emby_v}
             echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
             
-            # 提取标签消息作为更新日志 - 改进处理方式
-            TAG_MESSAGE=$(git tag -l --format='%(contents)' jump_to_emby_v$VERSION)
-            # 标准化换行符，移除Windows的回车符
-            TAG_MESSAGE=$(echo "$TAG_MESSAGE" | tr -d '\r')
+            # 使用GitHub API获取tag信息
+            echo "通过GitHub API获取tag: $GITHUB_REF 的消息"
+            TAG_REF=${GITHUB_REF#refs/}
+            
+            # 获取tag的引用对象URL
+            TAG_OBJECT_URL=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/git/$TAG_REF" | \
+              jq -r '.object.url')
+            
+            # 获取tag消息
+            if [[ -n "$TAG_OBJECT_URL" && "$TAG_OBJECT_URL" != "null" ]]; then
+              TAG_MESSAGE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "$TAG_OBJECT_URL" | \
+                jq -r '.message // "- 版本更新"')
+            else
+              echo "无法获取tag引用对象，使用默认内容"
+              TAG_MESSAGE="- 版本更新"
+            fi
+            
+            # 检查TAG_MESSAGE是否为空或null
+            if [[ -z "$TAG_MESSAGE" || "$TAG_MESSAGE" == "null" ]]; then
+              echo "无法从GitHub API获取tag消息，使用默认内容"
+              TAG_MESSAGE="- 版本更新"
+            fi
+            
+            # 输出调试信息
+            echo "从API获取的tag消息:"
+            echo "$TAG_MESSAGE"
             
             # 创建一个干净的版本用于Release显示
             echo "DISPLAY_CHANGELOG<<EOF" >> $GITHUB_OUTPUT
