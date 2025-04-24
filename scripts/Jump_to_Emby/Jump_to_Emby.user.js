@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         跳转到Emby播放
 // @namespace    https://github.com/cgkings
-// @version      0.0.3
+// @version      0.0.5
 // @description  👆👆👆👆👆👆👆在 ✅JavBus✅Javdb✅Sehuatang 高亮emby存在的视频，并提供标注一键跳转功能
 // @author       cgkings
 // @match        *://www.javbus.com/*
@@ -775,7 +775,18 @@
                                 $$('h1.ts') ||
                                 $$('h1');
                             if (container) {
-                                api.insertEmbyLink(container, data);
+                                const item = data.Items[0];
+                                const embyUrl = `${api.config.embyBaseUrl}web/index.html#!/item?id=${item.Id}&serverId=${item.ServerId}`;
+
+                                const embyLink = document.createElement('div');
+                                embyLink.style.background = api.config.highlightColor;
+                                embyLink.style.borderRadius = '3px';
+                                embyLink.style.padding = '3px 6px';
+                                embyLink.style.marginTop = '5px';
+                                embyLink.style.marginBottom = '10px';
+                                embyLink.innerHTML = `<a href="${embyUrl}" style="color: white; text-decoration: none;" target="_blank"><b>跳转到emby👉</b></a>`;
+
+                                container.parentNode.insertBefore(embyLink, container.nextSibling);
                                 foundAny = true;
                             }
                         }
