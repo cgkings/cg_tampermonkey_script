@@ -35,14 +35,14 @@ jobs:
             FORMATTED_CHANGELOG=$(echo "${{ github.event.inputs.changelog }}" | sed ':a;N;$!ba;s/\n/%0A/g')
             echo "CHANGELOG=$FORMATTED_CHANGELOG" >> $GITHUB_OUTPUT
           else
-            # 自动触发时从标签提取版本号和更新日志
+            # 自动触发时从标签提取版本号
             VERSION=${GITHUB_REF#refs/tags/jump_to_emby_v}
             echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
             
-            # 提取标签消息作为更新日志
+            # 提取标签消息作为更新日志 - 改进处理方式
             TAG_MESSAGE=$(git tag -l --format='%(contents)' jump_to_emby_v$VERSION)
-            # 格式化为GitHub Actions可用的格式
-            TAG_MESSAGE="${TAG_MESSAGE//$'\n'/'%0A'}"
+            # 标准化换行符并格式化为GitHub Actions可用的格式
+            TAG_MESSAGE=$(echo "$TAG_MESSAGE" | tr -d '\r' | sed ':a;N;$!ba;s/\n/%0A/g')
             echo "CHANGELOG=$TAG_MESSAGE" >> $GITHUB_OUTPUT
           fi
           
@@ -55,15 +55,8 @@ jobs:
           SCRIPT_CONTENT=$(cat scripts/Jump_to_Emby/Jump_to_Emby.user.js)
           
           # 使用GitHub API更新文件
+          # 处理换行符，确保格式正确
           CHANGELOG_CONTENT=$(echo "${{ steps.extract_info.outputs.CHANGELOG }}" | sed 's/%0A/\\n/g')
-          
-          # 检查CHANGELOG.md是否存在
-          if [ -f "scripts/Jump_to_Emby/CHANGELOG.md" ]; then
-            EXISTING_CHANGELOG=$(cat scripts/Jump_to_Emby/CHANGELOG.md)
-            NEW_CHANGELOG="# Jump to Emby 更新日志\n\n### v${{ steps.extract_info.outputs.VERSION }}\n$(echo "$CHANGELOG_CONTENT" | sed 's/\\n/\\n/g')\n\n$EXISTING_CHANGELOG"
-          else
-            NEW_CHANGELOG="# Jump to Emby 更新日志\n\n### v${{ steps.extract_info.outputs.VERSION }}\n$(echo "$CHANGELOG_CONTENT" | sed 's/\\n/\\n/g')"
-          fi
           
           # 安装jq用于解析JSON
           sudo apt-get install -y jq
@@ -80,34 +73,36 @@ jobs:
               "branch": "main"
             }'
           
-          # 更新CHANGELOG.md文件
-          # 检查CHANGELOG.md是否已存在
-          CHANGELOG_SHA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/${{ github.repository }}/contents/scripts/Jump_to_Emby/CHANGELOG.md" | jq -r .sha 2>/dev/null || echo "")
+          # 更新README.md中的更新日志部分
+          README_PATH="README.md"
+          README_CONTENT=$(cat $README_PATH)
           
-          if [ -n "$CHANGELOG_SHA" ]; then
-            # 更新现有的CHANGELOG.md
-            curl -X PUT \
-              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Accept: application/vnd.github.v3+json" \
-              "https://api.github.com/repos/${{ github.repository }}/contents/scripts/Jump_to_Emby/CHANGELOG.md" \
-              -d '{
-                "message": "Update changelog for version ${{ steps.extract_info.outputs.VERSION }}",
-                "content": "'"$(echo -n "$NEW_CHANGELOG" | base64 -w 0)"'",
-                "sha": "'"$CHANGELOG_SHA"'",
-                "branch": "main"
-              }'
+          # 提取更新日志内容，转换为适合展示的格式
+          DISPLAY_CHANGELOG=$(echo "${{ steps.extract_info.outputs.CHANGELOG }}" | sed 's/%0A/\n- /g')
+          NEW_VERSION_LOG="### v${{ steps.extract_info.outputs.VERSION }}\n\n- $DISPLAY_CHANGELOG"
+          
+          # 检查README中是否已有"更新日志"部分
+          if [[ "$README_CONTENT" == *"## 更新日志"* ]]; then
+            # 找到"更新日志"部分的位置并在其后插入新的版本日志
+            sed -i '/## 更新日志/a \
+            '"$NEW_VERSION_LOG"'' $README_PATH
           else
-            # 创建新的CHANGELOG.md
-            curl -X PUT \
-              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Accept: application/vnd.github.v3+json" \
-              "https://api.github.com/repos/${{ github.repository }}/contents/scripts/Jump_to_Emby/CHANGELOG.md" \
-              -d '{
-                "message": "Create changelog for version ${{ steps.extract_info.outputs.VERSION }}",
-                "content": "'"$(echo -n "$NEW_CHANGELOG" | base64 -w 0)"'",
-                "branch": "main"
-              }'
+            # 如果没有"更新日志"部分，则在文件末尾添加
+            echo -e "\n## 更新日志\n\n$NEW_VERSION_LOG" >> $README_PATH
           fi
+          
+          # 上传更新后的README.md
+          README_CONTENT_UPDATED=$(cat $README_PATH)
+          curl -X PUT \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/contents/README.md" \
+            -d '{
+              "message": "Update README with changelog for version ${{ steps.extract_info.outputs.VERSION }}",
+              "content": "'"$(echo -n "$README_CONTENT_UPDATED" | base64 -w 0)"'",
+              "sha": "'$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/${{ github.repository }}/contents/README.md" | jq -r .sha)'",
+              "branch": "main"
+            }'
           
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
@@ -121,5 +116,6 @@ jobs:
             ${{ steps.extract_info.outputs.CHANGELOG }}
           files: |
             scripts/Jump_to_Emby/Jump_to_Emby.user.js
+            README.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
