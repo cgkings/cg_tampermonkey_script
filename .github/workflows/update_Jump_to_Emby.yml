@@ -10,8 +10,8 @@ on:
         description: '版本号 (例如: 0.0.1)'
         required: true
       changelog:
-        description: '更新内容 (使用换行分隔每条内容)'
-        required: true
+        description: '更新内容 (不填则自动从对应tag提取说明)'
+        required: false
 
 permissions:
   contents: write
@@ -29,11 +29,25 @@ jobs:
         id: extract_info
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            # 手动触发时使用输入的版本号和更新日志
+            # 手动触发时使用输入的版本号
             echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
-            # 将输入的更新日志转换为适合GitHub Actions的格式
-            FORMATTED_CHANGELOG=$(echo "${{ github.event.inputs.changelog }}" | sed ':a;N;$!ba;s/\n/%0A/g')
-            echo "CHANGELOG=$FORMATTED_CHANGELOG" >> $GITHUB_OUTPUT
+            
+            # 如果提供了更新日志，就使用它；否则从对应标签中提取
+            if [[ -n "${{ github.event.inputs.changelog }}" ]]; then
+              # 创建一个干净的版本用于Release显示
+              echo "DISPLAY_CHANGELOG<<EOF" >> $GITHUB_OUTPUT
+              echo "${{ github.event.inputs.changelog }}" >> $GITHUB_OUTPUT
+              echo "EOF" >> $GITHUB_OUTPUT
+            else
+              # 从对应版本的标签中提取更新日志
+              TAG_MESSAGE=$(git tag -l --format='%(contents)' jump_to_emby_v${{ github.event.inputs.version }})
+              # 标准化换行符，移除Windows的回车符
+              TAG_MESSAGE=$(echo "$TAG_MESSAGE" | tr -d '\r')
+              
+              echo "DISPLAY_CHANGELOG<<EOF" >> $GITHUB_OUTPUT
+              echo "$TAG_MESSAGE" >> $GITHUB_OUTPUT
+              echo "EOF" >> $GITHUB_OUTPUT
+            fi
           else
             # 自动触发时从标签提取版本号
             VERSION=${GITHUB_REF#refs/tags/jump_to_emby_v}
@@ -41,9 +55,13 @@ jobs:
             
             # 提取标签消息作为更新日志 - 改进处理方式
             TAG_MESSAGE=$(git tag -l --format='%(contents)' jump_to_emby_v$VERSION)
-            # 标准化换行符并格式化为GitHub Actions可用的格式
-            TAG_MESSAGE=$(echo "$TAG_MESSAGE" | tr -d '\r' | sed ':a;N;$!ba;s/\n/%0A/g')
-            echo "CHANGELOG=$TAG_MESSAGE" >> $GITHUB_OUTPUT
+            # 标准化换行符，移除Windows的回车符
+            TAG_MESSAGE=$(echo "$TAG_MESSAGE" | tr -d '\r')
+            
+            # 创建一个干净的版本用于Release显示
+            echo "DISPLAY_CHANGELOG<<EOF" >> $GITHUB_OUTPUT
+            echo "$TAG_MESSAGE" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
           fi
           
       - name: Update script version
@@ -54,9 +72,8 @@ jobs:
           # 读取更新后的文件内容
           SCRIPT_CONTENT=$(cat scripts/Jump_to_Emby/Jump_to_Emby.user.js)
           
-          # 使用GitHub API更新文件
           # 处理换行符，确保格式正确
-          CHANGELOG_CONTENT=$(echo "${{ steps.extract_info.outputs.CHANGELOG }}" | sed 's/%0A/\\n/g')
+          CHANGELOG_CONTENT="${{ steps.extract_info.outputs.DISPLAY_CHANGELOG }}"
           
           # 安装jq用于解析JSON
           sudo apt-get install -y jq
@@ -73,34 +90,61 @@ jobs:
               "branch": "main"
             }'
           
-          # 更新README.md中的更新日志部分
-          README_PATH="README.md"
+          # 更新scripts/Jump_to_Emby/README.md中的更新日志部分
+          README_PATH="scripts/Jump_to_Emby/README.md"
+          
+          # 检查README文件是否存在
+          if [ ! -f "$README_PATH" ]; then
+            echo "README.md不存在于scripts/Jump_to_Emby/目录，创建新文件"
+            # 如果文件不存在，则从根目录复制README.md作为基础
+            if [ -f "README.md" ]; then
+              cp README.md $README_PATH
+            else
+              # 如果根目录也没有README.md，创建一个基础版本
+              mkdir -p scripts/Jump_to_Emby/
+              echo "# Jump to Emby（跳转到Emby播放）\n\n## 更新日志" > $README_PATH
+            fi
+          fi
+          
           README_CONTENT=$(cat $README_PATH)
           
-          # 提取更新日志内容，转换为适合展示的格式
-          DISPLAY_CHANGELOG=$(echo "${{ steps.extract_info.outputs.CHANGELOG }}" | sed 's/%0A/\n- /g')
-          NEW_VERSION_LOG="### v${{ steps.extract_info.outputs.VERSION }}\n\n- $DISPLAY_CHANGELOG"
+          # 格式化更新日志为Markdown格式
+          NEW_VERSION_LOG="### v${{ steps.extract_info.outputs.VERSION }}\n\n$CHANGELOG_CONTENT"
           
           # 检查README中是否已有"更新日志"部分
-          if [[ "$README_CONTENT" == *"## 更新日志"* ]]; then
-            # 找到"更新日志"部分的位置并在其后插入新的版本日志
-            sed -i '/## 更新日志/a \
-            '"$NEW_VERSION_LOG"'' $README_PATH
+          if grep -q "## 更新日志" $README_PATH; then
+            # 创建临时文件
+            TEMP_FILE=$(mktemp)
+            
+            # 使用awk插入内容到"## 更新日志"之后
+            awk '
+            /## 更新日志/ {
+              print $0
+              print ""
+              print "'"$NEW_VERSION_LOG"'"
+              print ""
+              next
+            }
+            { print $0 }
+            ' $README_PATH > $TEMP_FILE
+            
+            # 替换原文件
+            mv $TEMP_FILE $README_PATH
           else
             # 如果没有"更新日志"部分，则在文件末尾添加
             echo -e "\n## 更新日志\n\n$NEW_VERSION_LOG" >> $README_PATH
           fi
           
-          # 上传更新后的README.md
+          # 上传更新后的scripts/Jump_to_Emby/README.md
           README_CONTENT_UPDATED=$(cat $README_PATH)
           curl -X PUT \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/${{ github.repository }}/contents/README.md" \
+            "https://api.github.com/repos/${{ github.repository }}/contents/$README_PATH" \
             -d '{
               "message": "Update README with changelog for version ${{ steps.extract_info.outputs.VERSION }}",
               "content": "'"$(echo -n "$README_CONTENT_UPDATED" | base64 -w 0)"'",
-              "sha": "'$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/${{ github.repository }}/contents/README.md" | jq -r .sha)'",
+              "sha": "'$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/${{ github.repository }}/contents/$README_PATH" | jq -r .sha 2>/dev/null || echo "")'",
               "branch": "main"
             }'
           
@@ -113,9 +157,9 @@ jobs:
             Jump to Emby v${{ steps.extract_info.outputs.VERSION }} 发布了！
             
             ## 更新内容
-            ${{ steps.extract_info.outputs.CHANGELOG }}
+            ${{ steps.extract_info.outputs.DISPLAY_CHANGELOG }}
           files: |
             scripts/Jump_to_Emby/Jump_to_Emby.user.js
-            README.md
+            scripts/Jump_to_Emby/README.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
