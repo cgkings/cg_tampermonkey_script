@@ -1,14 +1,15 @@
 // ==UserScript==
 // @name         跳转到Emby播放
 // @namespace    https://github.com/cgkings
-// @version      0.0.6
-// @description  👆👆👆👆👆👆👆在 ✅JavBus✅Javdb✅Sehuatang 高亮emby存在的视频，并提供标注一键跳转功能
+// @version      0.0.7
+// @description  👆👆👆👆👆👆👆在 ✅JavBus✅Javdb✅Sehuatang ✅supjav 高亮emby存在的视频，并提供标注一键跳转功能
 // @author       cgkings
 // @match        *://www.javbus.com/*
 // @match        *://javdb*.com/v/*
 // @match        *://javdb*.com/search?q=*
 // @match        *://www.javdb.com/*
 // @match        *://javdb.com/*
+// @match        *://supjav.com/*
 // @match        *://*.sehuatang.*/*
 // @match        *://*.sehuatang.net/*
 // @match        https://.*/thread-*
@@ -19,7 +20,6 @@
 // @grant        GM_registerMenuCommand
 // @grant        GM_addStyle
 // @run-at       document-start
-// @priority     1
 // @license      MIT
 // @supportURL   https://github.com/cgkings/cg_tampermonkey_script/issues
 // @homepageURL  https://github.com/cgkings/cg_tampermonkey_script
@@ -36,10 +36,12 @@
         get embyBaseUrl() { return GM_getValue('embyBaseUrl', '') },
         get highlightColor() { return GM_getValue('highlightColor', '#52b54b') },
         get maxConcurrentRequests() { return GM_getValue('maxConcurrentRequests', 50) },
+        get badgeStyle() { return GM_getValue('badgeStyle', true) }, // 是否使用徽章样式
         set embyAPI(val) { GM_setValue('embyAPI', val) },
         set embyBaseUrl(val) { GM_setValue('embyBaseUrl', val) },
         set highlightColor(val) { GM_setValue('highlightColor', val) },
         set maxConcurrentRequests(val) { GM_setValue('maxConcurrentRequests', val) },
+        set badgeStyle(val) { GM_setValue('badgeStyle', val) },
         isValid() { return !!this.embyAPI && !!this.embyBaseUrl }
     };
 
@@ -61,6 +63,15 @@
         .emby-jump-status-indicator.success {background-color:rgba(82,181,75,0.9)}
         .emby-jump-status-indicator.error {background-color:rgba(220,53,69,0.9)}
         .emby-jump-status-indicator .close-btn {margin-left:10px; cursor:pointer; font-size:16px; font-weight:bold}
+
+        /* 徽章样式 */
+        .emby-badge {position:absolute; top:5px; right:5px; color:#fff; padding:2px 5px; font-size:12px; font-weight:bold; z-index:10; border:2px solid transparent; border-radius:4px; background-origin:border-box; background-clip:padding-box,border-box; background-image:linear-gradient(#000 0 0), linear-gradient(50deg,#ff0000,#ff7f00,#ffff00,#00ff00,#0000ff,#4b0082,#8b00ff);}
+        .emby-badge:hover {color:#000; background-clip:padding-box,border-box; background-image:linear-gradient(#fff 0 0),linear-gradient(50deg,#ff0000,#ff7f00,#ffff00,#00ff00,#0000ff,#4b0082,#8b00ff);}
+        .emby-highlight {outline:3px solid ${Config.highlightColor} !important; position:relative;}
+
+        /* 传统链接样式 */
+        .emby-jump-link {background:${Config.highlightColor}; border-radius:3px; padding:3px 6px; margin-top:5px; margin-bottom:3px}
+        .emby-jump-link a {color:white; text-decoration:none; display:block;}
     `);
 
     // 单例状态指示器
@@ -153,6 +164,13 @@
                     <input type="number" id="max-requests" min="1" max="100" value="${Config.maxConcurrentRequests}">
                     <small style="color:#666">因为是本地请求，可以设置较大值</small>
                 </div>
+                <div class="emby-jump-settings-field">
+                    <label for="badge-style">
+                        <input type="checkbox" id="badge-style" ${Config.badgeStyle ? 'checked' : ''}>
+                        使用徽章样式代替链接（推荐）
+                    </label>
+                    <small style="color:#666">清单页使用小徽章标记，不影响布局</small>
+                </div>
                 <div class="emby-jump-settings-buttons">
                     <button class="emby-jump-settings-cancel">取消</button>
                     <button class="emby-jump-settings-save">保存</button>
@@ -176,6 +194,7 @@
                 Config.embyAPI = document.getElementById('emby-api').value;
                 Config.highlightColor = document.getElementById('highlight-color').value;
                 Config.maxConcurrentRequests = parseInt(document.getElementById('max-requests').value, 10);
+                Config.badgeStyle = document.getElementById('badge-style').checked;
 
                 closePanel();
                 alert('设置已保存！请刷新页面以应用更改。');
@@ -287,29 +306,26 @@
             const embyUrl = `${Config.embyBaseUrl}web/index.html#!/item?id=${item.Id}&serverId=${item.ServerId}`;
 
             const el = document.createElement('div');
-            el.style.cssText = `background:${Config.highlightColor};border-radius:3px;padding:3px 6px;margin-top:5px;margin-bottom:3px`;
             el.className = 'emby-jump-link';
-            el.innerHTML = `<a href="${embyUrl}" style="color:white;text-decoration:none" target="_blank"><b>跳转到emby👉</b></a>`;
+            el.innerHTML = `<a href="${embyUrl}" target="_blank"><b>跳转到emby👉</b></a>`;
 
             return el;
         }
 
-        // 高亮视频项
-        highlightItem(element) {
-            let current = element;
-            const containerClasses = ['item', 'masonry-brick', 'grid-item', 'movie-list'];
+        // 创建Emby徽章元素
+        createBadge(data) {
+            if (!data?.Items?.length) return null;
 
-            while (current && current !== document.body) {
-                for (const className of containerClasses) {
-                    if (current.classList?.contains(className)) {
-                        current.style.cssText += `border:3px solid ${Config.highlightColor};background-color:${Config.highlightColor}22`;
-                        return current;
-                    }
-                }
-                current = current.parentElement;
-            }
+            const item = data.Items[0];
+            const embyUrl = `${Config.embyBaseUrl}web/index.html#!/item?id=${item.Id}&serverId=${item.ServerId}`;
 
-            return null;
+            const el = document.createElement('a');
+            el.className = 'emby-badge';
+            el.href = embyUrl;
+            el.target = '_blank';
+            el.textContent = 'Emby';
+
+            return el;
         }
     }
 
@@ -321,8 +337,71 @@
             return this;
         },
 
-        // 处理列表项
-        async processItems(items) {
+        // 处理列表项 - 徽章样式
+        async processItemsWithBadge(items) {
+            if (!items?.length) return;
+
+            Status.show(`正在收集番号: 共${items.length}个项目`);
+
+            // 收集番号
+            const toProcess = [];
+            const codes = [];
+
+            for (const item of items) {
+                if (this.processed.has(item)) continue;
+                this.processed.add(item);
+
+                const code = this.extractCode(item);
+                if (!code) continue;
+
+                // 查找第一个包含图片的元素
+                const imgContainer = this.findImgContainer(item);
+                if (!imgContainer) continue;
+
+                toProcess.push({ item, code, imgContainer });
+                codes.push(code);
+            }
+
+            if (codes.length > 0) {
+                const results = await this.api.batchQuery(codes);
+
+                // 处理结果 - 批量操作
+                const operations = [];
+
+                for (let i = 0; i < results.length; i++) {
+                    if (i < toProcess.length && results[i]?.Items?.length > 0) {
+                        const { item, imgContainer } = toProcess[i];
+                        const badge = this.api.createBadge(results[i]);
+
+                        if (badge) {
+                            // 准备添加徽章
+                            operations.push(() => {
+                                // 确保图片容器是相对定位
+                                if (window.getComputedStyle(imgContainer).position === 'static') {
+                                    imgContainer.style.position = 'relative';
+                                }
+
+                                // 添加高亮样式 - 使用outline避免影响布局
+                                item.classList.add('emby-highlight');
+
+                                // 添加徽章
+                                imgContainer.appendChild(badge);
+                            });
+                        }
+                    }
+                }
+
+                // 批量DOM操作 - 减少重排
+                if (operations.length > 0) {
+                    requestAnimationFrame(() => {
+                        operations.forEach(op => op());
+                    });
+                }
+            }
+        },
+
+        // 处理列表项 - 传统链接样式
+        async processItemsWithLink(items) {
             if (!items?.length) return;
 
             Status.show(`正在收集番号: 共${items.length}个项目`);
@@ -356,7 +435,19 @@
 
                         if (link) {
                             const target = element.parentNode || element;
-                            this.api.highlightItem(element);
+
+                            // 高亮条目样式
+                            let current = element;
+                            const containerClasses = ['item', 'masonry-brick', 'grid-item', 'movie-list', 'post'];
+                            while (current && current !== document.body) {
+                                for (const className of containerClasses) {
+                                    if (current.classList?.contains(className)) {
+                                        current.style.cssText += `border:3px solid ${Config.highlightColor};background-color:${Config.highlightColor}22`;
+                                        break;
+                                    }
+                                }
+                                current = current.parentElement;
+                            }
 
                             processedElements.push({
                                 target,
@@ -379,9 +470,36 @@
         // 主处理函数
         async process() {
             const items = document.querySelectorAll(this.listSelector);
-            if (items.length > 0) await this.processItems(items);
+
+            if (items.length > 0) {
+                if (Config.badgeStyle) {
+                    await this.processItemsWithBadge(items);
+                } else {
+                    await this.processItemsWithLink(items);
+                }
+            }
+
             await this.processDetailPage();
             this.setupObserver();
+        },
+
+        // 查找图片容器
+        findImgContainer(item) {
+            // 不同网站的图片容器选择器
+            const imgSelectors = [
+                '.img', // supjav
+                'a.movie-box', // javbus
+                '.cover', // javdb
+                'img'
+            ];
+
+            for (const selector of imgSelectors) {
+                const imgContainer = item.querySelector(selector);
+                if (imgContainer) return imgContainer;
+            }
+
+            // 找不到合适的容器，尝试找第一个包含图片的元素
+            return item.querySelector('a') || item;
         },
 
         // 观察器设置
@@ -411,7 +529,11 @@
                 }
 
                 if (newElements.length > 0) {
-                    this.processItems(newElements);
+                    if (Config.badgeStyle) {
+                        this.processItemsWithBadge(newElements);
+                    } else {
+                        this.processItemsWithLink(newElements);
+                    }
                 }
 
                 pending = [];
@@ -433,6 +555,9 @@
             getElement: item => item.querySelector('.item date'),
 
             async processDetailPage() {
+                // 防止重复处理
+                if (document.querySelector('.emby-jump-link, .emby-badge')) return;
+
                 const infoElement = document.querySelector('.col-md-3.info p');
                 if (!infoElement) return;
 
@@ -462,6 +587,9 @@
             getElement: item => item.querySelector('.video-title strong'),
 
             async processDetailPage() {
+                // 防止重复处理
+                if (document.querySelector('.emby-jump-link, .emby-badge')) return;
+
                 const detailElement = document.querySelector('body > section > div > div.video-detail > h2 > strong') ||
                     document.querySelector('.video-detail h2 strong');
 
@@ -484,10 +612,58 @@
             }
         }),
 
+        supjav: Object.assign(Object.create(BaseProcessor), {
+            listSelector: '.post',
+            extractCode: function (item) {
+                // 从标题中提取番号
+                const title = item.querySelector('h3 a')?.textContent?.trim();
+                if (!title) return null;
+
+                // 匹配番号格式
+                const match = title.match(/([a-zA-Z0-9]+-\d+)/i);
+                return match ? match[1] : null;
+            },
+            getElement: function (item) {
+                return item.querySelector('h3 a');
+            },
+
+            async processDetailPage() {
+                // 防止重复处理 - 限制在主内容区域
+                if (document.querySelector('.video-wrap .emby-jump-link, .video-wrap .emby-badge')) return;
+
+                // 在详情页面查找标题 - 只处理主标题，不处理相关推荐
+                const titleElement = document.querySelector('.video-wrap .archive-title h1');
+                if (!titleElement) return;
+
+                const title = titleElement.textContent.trim();
+                const match = title.match(/([a-zA-Z0-9]+-\d+)/i);
+
+                if (!match) return;
+
+                const code = match[1];
+                if (code) {
+                    Status.show('查询中...');
+                    const data = await this.api.fetchData(code);
+                    if (data.Items?.length > 0) {
+                        const link = this.api.createLink(data);
+                        if (link) {
+                            titleElement.parentNode.insertBefore(link, titleElement.nextSibling);
+                            Status.success('找到匹配项', false);
+                        }
+                    } else {
+                        Status.error('未找到匹配项', false);
+                    }
+                }
+            }
+        }),
+
         sehuatang: Object.assign(Object.create(BaseProcessor), {
             listSelector: '',
 
             async process() {
+                // 防止重复处理
+                if (document.querySelector('.emby-jump-link, .emby-badge')) return;
+
                 const title = document.title.trim();
                 const codes = this.extractCodes(title);
 
@@ -548,6 +724,10 @@
 
         if (location.hostname.includes('javdb') || document.querySelector('#footer')?.textContent?.includes('javdb')) {
             return 'javdb';
+        }
+
+        if (location.hostname.includes('supjav') || document.title.includes('SupJav')) {
+            return 'supjav';
         }
 
         if (location.hostname.includes('sehuatang') || document.querySelector('#flk')?.textContent?.includes('色花堂')) {
