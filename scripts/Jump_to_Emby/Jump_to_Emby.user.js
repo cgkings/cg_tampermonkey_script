@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         跳转到Emby播放
 // @namespace    https://github.com/cgkings
-// @version      0.0.7
+// @version      0.0.8
 // @description  👆👆👆👆👆👆👆在 ✅JavBus✅Javdb✅Sehuatang ✅supjav 高亮emby存在的视频，并提供标注一键跳转功能
 // @author       cgkings
 // @match        *://www.javbus.com/*
@@ -36,23 +36,45 @@
         get embyBaseUrl() { return GM_getValue('embyBaseUrl', '') },
         get highlightColor() { return GM_getValue('highlightColor', '#52b54b') },
         get maxConcurrentRequests() { return GM_getValue('maxConcurrentRequests', 50) },
-        get badgeStyle() { return GM_getValue('badgeStyle', true) }, // 是否使用徽章样式
+        // 添加徽章相关配置
+        get badgeColor() { return GM_getValue('badgeColor', '#000') },
+        get badgeTextColor() { return GM_getValue('badgeTextColor', '#fff') },
+        get badgeSize() { return GM_getValue('badgeSize', 'medium') }, // small, medium, large
+
         set embyAPI(val) { GM_setValue('embyAPI', val) },
         set embyBaseUrl(val) { GM_setValue('embyBaseUrl', val) },
         set highlightColor(val) { GM_setValue('highlightColor', val) },
         set maxConcurrentRequests(val) { GM_setValue('maxConcurrentRequests', val) },
-        set badgeStyle(val) { GM_setValue('badgeStyle', val) },
+        // 添加徽章相关配置的setter
+        set badgeColor(val) { GM_setValue('badgeColor', val) },
+        set badgeTextColor(val) { GM_setValue('badgeTextColor', val) },
+        set badgeSize(val) { GM_setValue('badgeSize', val) },
+
         isValid() { return !!this.embyAPI && !!this.embyBaseUrl }
     };
 
+    // 获取徽章尺寸样式
+    function getBadgeSizeStyle() {
+        switch (Config.badgeSize) {
+            case 'small':
+                return { fontSize: '10px', padding: '1px 4px' };
+            case 'large':
+                return { fontSize: '14px', padding: '3px 7px' };
+            case 'medium':
+            default:
+                return { fontSize: '12px', padding: '2px 5px' };
+        }
+    }
+
     // 初始化DOM样式
+    const badgeSize = getBadgeSizeStyle();
     GM_addStyle(`
         .emby-jump-settings-panel {position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:#fff; border-radius:8px; box-shadow:0 0 20px rgba(0,0,0,0.3); padding:20px; z-index:10000; width:400px; max-width:90%; display:none}
         .emby-jump-settings-header {display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; padding-bottom:10px; border-bottom:1px solid #eee}
         .emby-jump-settings-close {cursor:pointer; font-size:18px; color:#999}
         .emby-jump-settings-field {margin-bottom:15px}
         .emby-jump-settings-field label {display:block; margin-bottom:5px; font-weight:bold}
-        .emby-jump-settings-field input {width:100%; padding:8px; border:1px solid #ddd; border-radius:4px; box-sizing:border-box}
+        .emby-jump-settings-field input, .emby-jump-settings-field select {width:100%; padding:8px; border:1px solid #ddd; border-radius:4px; box-sizing:border-box}
         .emby-jump-settings-buttons {display:flex; justify-content:flex-end; gap:10px; margin-top:15px}
         .emby-jump-settings-buttons button {padding:8px 15px; border:none; border-radius:4px; cursor:pointer}
         .emby-jump-settings-save {background-color:#52b54b; color:white}
@@ -64,10 +86,10 @@
         .emby-jump-status-indicator.error {background-color:rgba(220,53,69,0.9)}
         .emby-jump-status-indicator .close-btn {margin-left:10px; cursor:pointer; font-size:16px; font-weight:bold}
 
-        /* 徽章样式 */
-        .emby-badge {position:absolute; top:5px; right:5px; color:#fff; padding:2px 5px; font-size:12px; font-weight:bold; z-index:10; border:2px solid transparent; border-radius:4px; background-origin:border-box; background-clip:padding-box,border-box; background-image:linear-gradient(#000 0 0), linear-gradient(50deg,#ff0000,#ff7f00,#ffff00,#00ff00,#0000ff,#4b0082,#8b00ff);}
+        /* 徽章样式 - 保留彩虹边框，使用自定义颜色和大小 */
+        .emby-badge {position:absolute; top:5px; right:5px; color:${Config.badgeTextColor}; padding:${badgeSize.padding}; font-size:${badgeSize.fontSize}; font-weight:bold; z-index:10; border:2px solid transparent; border-radius:4px; background-origin:border-box; background-clip:padding-box,border-box; background-image:linear-gradient(${Config.badgeColor} 0 0), linear-gradient(50deg,#ff0000,#ff7f00,#ffff00,#00ff00,#0000ff,#4b0082,#8b00ff);}
         .emby-badge:hover {color:#000; background-clip:padding-box,border-box; background-image:linear-gradient(#fff 0 0),linear-gradient(50deg,#ff0000,#ff7f00,#ffff00,#00ff00,#0000ff,#4b0082,#8b00ff);}
-        .emby-highlight {outline:3px solid ${Config.highlightColor} !important; position:relative;}
+        .emby-highlight {outline:4px solid ${Config.highlightColor} !important; position:relative;}
 
         /* 传统链接样式 */
         .emby-jump-link {background:${Config.highlightColor}; border-radius:3px; padding:3px 6px; margin-top:5px; margin-bottom:3px}
@@ -164,12 +186,23 @@
                     <input type="number" id="max-requests" min="1" max="100" value="${Config.maxConcurrentRequests}">
                     <small style="color:#666">因为是本地请求，可以设置较大值</small>
                 </div>
+                <!-- 添加徽章设置项 -->
                 <div class="emby-jump-settings-field">
-                    <label for="badge-style">
-                        <input type="checkbox" id="badge-style" ${Config.badgeStyle ? 'checked' : ''}>
-                        使用徽章样式代替链接（推荐）
-                    </label>
-                    <small style="color:#666">清单页使用小徽章标记，不影响布局</small>
+                    <label for="badge-size">徽章大小</label>
+                    <select id="badge-size">
+                        <option value="small" ${Config.badgeSize === 'small' ? 'selected' : ''}>小</option>
+                        <option value="medium" ${Config.badgeSize === 'medium' ? 'selected' : ''}>中</option>
+                        <option value="large" ${Config.badgeSize === 'large' ? 'selected' : ''}>大</option>
+                    </select>
+                </div>
+                <div class="emby-jump-settings-field">
+                    <label for="badge-color">徽章背景颜色</label>
+                    <input type="color" id="badge-color" value="${Config.badgeColor}">
+                    <small style="color:#666">背景颜色将与彩虹边框一起显示</small>
+                </div>
+                <div class="emby-jump-settings-field">
+                    <label for="badge-text-color">徽章文字颜色</label>
+                    <input type="color" id="badge-text-color" value="${Config.badgeTextColor}">
                 </div>
                 <div class="emby-jump-settings-buttons">
                     <button class="emby-jump-settings-cancel">取消</button>
@@ -194,7 +227,9 @@
                 Config.embyAPI = document.getElementById('emby-api').value;
                 Config.highlightColor = document.getElementById('highlight-color').value;
                 Config.maxConcurrentRequests = parseInt(document.getElementById('max-requests').value, 10);
-                Config.badgeStyle = document.getElementById('badge-style').checked;
+                Config.badgeSize = document.getElementById('badge-size').value;
+                Config.badgeColor = document.getElementById('badge-color').value;
+                Config.badgeTextColor = document.getElementById('badge-text-color').value;
 
                 closePanel();
                 alert('设置已保存！请刷新页面以应用更改。');
@@ -472,11 +507,8 @@
             const items = document.querySelectorAll(this.listSelector);
 
             if (items.length > 0) {
-                if (Config.badgeStyle) {
-                    await this.processItemsWithBadge(items);
-                } else {
-                    await this.processItemsWithLink(items);
-                }
+                // 始终使用徽章样式
+                await this.processItemsWithBadge(items);
             }
 
             await this.processDetailPage();
@@ -529,11 +561,8 @@
                 }
 
                 if (newElements.length > 0) {
-                    if (Config.badgeStyle) {
-                        this.processItemsWithBadge(newElements);
-                    } else {
-                        this.processItemsWithLink(newElements);
-                    }
+                    // 始终使用徽章样式
+                    this.processItemsWithBadge(newElements);
                 }
 
                 pending = [];
