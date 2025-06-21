@@ -1,8 +1,39 @@
+// ==UserScript==
+// @name         Emby番号助手-固定位置+竞速获取版
+// @namespace    http://tampermonkey.net/
+// @version      0.0.2
+// @description  固定位置显示，DOM和API竞速获取番号，自定义位置
+// @author       You
+// @match        *://*/web/index.html*
+// @grant        none
+// @run-at       document-end
+// ==/UserScript==
+
 (function () {
     'use strict';
 
-    // 番号提取逻辑
-    var codePatterns = [
+    // 配置项
+    const CONFIG = {
+        logEnabled: true,
+        // 固定位置配置（可自定义）
+        position: {
+            top: '490px',      // 距离顶部
+            left: '450px',     // 距离右边，可改为 left: '20px'或 right: '20px'
+            // bottom: '120px', // 如果想要距离底部，注释掉top，启用这行
+        },
+        // 样式配置
+        style: {
+            background: 'rgba(0,0,0,0.85)',
+            borderRadius: '8px',
+            padding: '12px',
+            maxWidth: '350px',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+            zIndex: '10000'
+        }
+    };
+
+    // 番号提取规则
+    const codePatterns = [
         /([a-zA-Z]{2,15})[-\s]?(\d{2,15})/i,
         /(FC2)[-\s]?(PPV)[-\s]?(\d{6,7})/i,
         /(\d{3,4}[a-zA-Z]{2,15}[-\s]?\d{2,15})/i,
@@ -12,12 +43,17 @@
         /([a-zA-Z]{2,15}\d{3,5})/i
     ];
 
-    // 提取番号函数
+    // 日志工具
+    const log = {
+        info: (...args) => CONFIG.logEnabled && console.log('%c[番号助手]', 'color: blue;', ...args),
+        error: (...args) => CONFIG.logEnabled && console.log('%c[番号助手]', 'color: red;', ...args)
+    };
+
+    // 提取番号
     function extractCode(title) {
         if (!title) return null;
-
-        for (var i = 0; i < codePatterns.length; i++) {
-            var match = title.match(codePatterns[i]);
+        for (const pattern of codePatterns) {
+            const match = title.match(pattern);
             if (match) {
                 if (match[0].toLowerCase().includes('fc2')) {
                     return 'FC2-PPV-' + match[3];
@@ -28,21 +64,138 @@
         return null;
     }
 
-    // 创建跳转链接
-    function createJumpLinks(code) {
-        var linkContainer = document.createElement('div');
-        linkContainer.style.cssText = `
-            margin: 10px 0;
-            padding: 10px;
-            background: rgba(0,0,0,0.3);
-            border-radius: 5px;
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-        `;
+    // 方法1：DOM解析获取番号
+    function getCodeFromDOM() {
+        return new Promise((resolve) => {
+            try {
+                const titleElement = document.querySelector('.itemName') ||
+                    document.querySelector('.detailPagePrimaryTitle') ||
+                    document.querySelector('h1') ||
+                    document.querySelector('[data-testid="item-name"]');
 
-        // 定义跳转站点
-        var sites = [
+                if (!titleElement) {
+                    resolve(null);
+                    return;
+                }
+
+                const title = titleElement.textContent || titleElement.innerText;
+                const code = extractCode(title);
+
+                if (code) {
+                    log.info('DOM方式获取到番号:', code);
+                    resolve({ code, method: 'DOM', title });
+                } else {
+                    resolve(null);
+                }
+            } catch (error) {
+                log.error('DOM获取失败:', error);
+                resolve(null);
+            }
+        });
+    }
+
+    // 方法2：API获取番号
+    function getCodeFromAPI() {
+        return new Promise(async (resolve) => {
+            try {
+                // 提取ItemID
+                const hash = window.location.hash;
+                const idMatch = /id=([^&]+)/.exec(hash);
+                const itemId = idMatch ? idMatch[1] : null;
+
+                if (!itemId) {
+                    resolve(null);
+                    return;
+                }
+
+                // 获取API客户端
+                const apiClient = (typeof ApiClient !== 'undefined') ? ApiClient : window.ApiClient;
+                if (!apiClient) {
+                    resolve(null);
+                    return;
+                }
+
+                // 获取媒体信息
+                const userId = apiClient._serverInfo ? apiClient._serverInfo.UserId : apiClient.getCurrentUserId();
+                const itemInfo = await apiClient.getItem(userId, itemId);
+
+                // 尝试从多个字段提取番号
+                const titleSources = [
+                    itemInfo.Name,
+                    itemInfo.OriginalTitle,
+                    itemInfo.SortName,
+                    itemInfo.ForcedSortName
+                ].filter(Boolean);
+
+                for (const title of titleSources) {
+                    const code = extractCode(title);
+                    if (code) {
+                        log.info('API方式获取到番号:', code);
+                        resolve({ code, method: 'API', title });
+                        return;
+                    }
+                }
+
+                resolve(null);
+            } catch (error) {
+                log.error('API获取失败:', error);
+                resolve(null);
+            }
+        });
+    }
+
+    // 竞速获取番号（DOM vs API，谁快用谁）
+    function getCodeFast() {
+        return new Promise((resolve) => {
+            let resolved = false;
+
+            // 同时启动两种方法
+            getCodeFromDOM().then(result => {
+                if (!resolved && result) {
+                    resolved = true;
+                    resolve(result);
+                }
+            });
+
+            getCodeFromAPI().then(result => {
+                if (!resolved && result) {
+                    resolved = true;
+                    resolve(result);
+                }
+            });
+
+            // 5秒超时
+            setTimeout(() => {
+                if (!resolved) {
+                    resolved = true;
+                    resolve(null);
+                }
+            }, 5000);
+        });
+    }
+
+    // 创建跳转链接（固定位置）
+    function createJumpLinks(code) {
+        const linkContainer = document.createElement('div');
+        linkContainer.className = 'custom-code-links';
+
+        // 构建位置样式
+        let positionStyle = 'position: fixed;';
+        Object.entries(CONFIG.position).forEach(([key, value]) => {
+            positionStyle += `${key}: ${value};`;
+        });
+
+        // 构建完整样式
+        let fullStyle = positionStyle;
+        Object.entries(CONFIG.style).forEach(([key, value]) => {
+            const cssKey = key.replace(/([A-Z])/g, '-$1').toLowerCase();
+            fullStyle += `${cssKey}: ${value};`;
+        });
+
+        linkContainer.style.cssText = fullStyle;
+
+        // 站点配置
+        const sites = [
             {
                 name: 'JavDB',
                 url: 'https://javdb.com/search?q=' + encodeURIComponent(code),
@@ -60,123 +213,116 @@
             }
         ];
 
-        // 添加标题
-        var title = document.createElement('span');
-        title.textContent = '番号: ' + code;
-        title.style.cssText = `
-            color: #fff;
-            font-weight: bold;
-            margin-right: 15px;
-            line-height: 32px;
+        // 容器内容
+        linkContainer.innerHTML = `
+            <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
+                <span style="color: #fff; font-weight: bold; font-size: 13px; margin-right: 8px;">
+                    番号: ${code}
+                </span>
+                ${sites.map(site => `
+                    <a href="${site.url}" target="_blank" style="
+                        display: inline-block;
+                        padding: 5px 10px;
+                        background: ${site.color};
+                        color: white;
+                        text-decoration: none;
+                        border-radius: 4px;
+                        font-size: 11px;
+                        transition: opacity 0.3s;
+                    " onmouseover="this.style.opacity='0.8'" onmouseout="this.style.opacity='1'">
+                        ${site.name}
+                    </a>
+                `).join('')}
+            </div>
         `;
-        linkContainer.appendChild(title);
-
-        // 创建链接按钮
-        sites.forEach(function (site) {
-            var link = document.createElement('a');
-            link.href = site.url;
-            link.target = '_blank';
-            link.textContent = site.name;
-            link.style.cssText = `
-                display: inline-block;
-                padding: 6px 12px;
-                background: ${site.color};
-                color: white;
-                text-decoration: none;
-                border-radius: 4px;
-                font-size: 12px;
-                transition: opacity 0.3s;
-            `;
-
-            link.onmouseover = function () { this.style.opacity = '0.8'; };
-            link.onmouseout = function () { this.style.opacity = '1'; };
-
-            linkContainer.appendChild(link);
-        });
 
         return linkContainer;
     }
 
-    // 主函数
-    function addCodeLinks() {
-        // 尝试多种方式获取标题
-        var titleElement = document.querySelector('.itemName') ||
-            document.querySelector('.detailPagePrimaryTitle') ||
-            document.querySelector('h1') ||
-            document.querySelector('[data-testid="item-name"]');
-
-        if (!titleElement) {
-            console.log('未找到标题元素');
-            return;
-        }
-
-        var title = titleElement.textContent || titleElement.innerText;
-        var code = extractCode(title);
-
-        if (!code) {
-            console.log('未提取到番号:', title);
-            return;
-        }
-
-        console.log('提取到番号:', code);
-
-        // 检查是否已经添加过链接
+    // 添加番号链接
+    async function addCodeLinks() {
+        // 检查是否已存在
         if (document.querySelector('.custom-code-links')) {
             return;
         }
 
-        // 创建链接容器
-        var linkContainer = createJumpLinks(code);
-        linkContainer.className = 'custom-code-links';
+        // 检查是否在详情页
+        if (!window.location.hash.includes('id=')) {
+            return;
+        }
 
-        // 找到合适的位置插入链接
-        var insertTarget = document.querySelector('.itemDetailPage .detailPageContent') ||
-            document.querySelector('.itemDetail') ||
-            document.querySelector('.detailPagePrimaryContainer') ||
-            titleElement.parentNode;
+        try {
+            // 竞速获取番号
+            const result = await getCodeFast();
 
-        if (insertTarget) {
-            // 插入到标题后面
-            if (titleElement.parentNode === insertTarget) {
-                titleElement.parentNode.insertBefore(linkContainer, titleElement.nextSibling);
-            } else {
-                insertTarget.insertBefore(linkContainer, insertTarget.firstChild);
+            if (!result) {
+                log.info('未获取到番号');
+                return;
+            }
+
+            log.info(`通过${result.method}方式获取到番号: ${result.code}`);
+
+            // 创建并添加链接
+            const linkContainer = createJumpLinks(result.code);
+            document.body.appendChild(linkContainer);
+
+            log.info('番号链接已添加');
+
+        } catch (error) {
+            log.error('添加番号链接失败:', error);
+        }
+    }
+
+    // 页面变化处理
+    let lastUrl = window.location.href;
+
+    function handlePageChange() {
+        const currentUrl = window.location.href;
+
+        if (currentUrl !== lastUrl) {
+            lastUrl = currentUrl;
+
+            // 清理旧链接
+            const existing = document.querySelector('.custom-code-links');
+            if (existing) existing.remove();
+
+            // 如果是详情页，添加链接
+            if (window.location.hash.includes('id=')) {
+                log.info('页面变化，开始获取番号');
+                setTimeout(addCodeLinks, 800);
             }
         }
     }
 
-    // 等待页面加载
-    function waitForPage() {
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', function () {
-                setTimeout(addCodeLinks, 1000);
-            });
-        } else {
-            setTimeout(addCodeLinks, 1000);
-        }
+    // 初始化
+    function init() {
+        log.info('Emby番号助手已启动（固定位置+竞速获取版）');
+        log.info('显示位置:', CONFIG.position);
+
+        // 监听URL变化
+        new MutationObserver(() => {
+            if (location.href !== lastUrl) {
+                setTimeout(handlePageChange, 100);
+            }
+        }).observe(document, { subtree: true, childList: true });
+
+        // 定期检查（备用，对付emby的间隔限制）
+        setInterval(() => {
+            if (window.location.hash.includes('id=') && !document.querySelector('.custom-code-links')) {
+                log.info('定期检查：发现详情页无番号链接，尝试添加');
+                addCodeLinks();
+            }
+        }, 3000);
+
+        // 初始执行
+        setTimeout(addCodeLinks, 1500);
     }
 
-    // 监听页面变化（SPA应用）
-    var observer = new MutationObserver(function (mutations) {
-        mutations.forEach(function (mutation) {
-            if (mutation.addedNodes.length > 0) {
-                setTimeout(addCodeLinks, 500);
-            }
-        });
-    });
-
-    // 开始观察
-    observer.observe(document.body, {
-        childList: true,
-        subtree: true
-    });
-
-    // 初始执行
-    waitForPage();
-
-    // 路由变化监听
-    window.addEventListener('popstate', function () {
-        setTimeout(addCodeLinks, 1000);
-    });
+    // 启动
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        setTimeout(init, 1000);
+    }
 
 })();
