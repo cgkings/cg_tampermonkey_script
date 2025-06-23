@@ -50,70 +50,21 @@
     function processPath(path) {
         if (!path) return '未知路径';
 
+        console.log('processPath 输入:', path);
+
         try {
-            // 获取文件夹路径（直接去掉文件名，无需先删后缀）
+            // 直接使用标准的路径处理方法
+            // path.replace(/[^\\\/]*$/, '') 会移除最后一个斜杠后的所有内容（即文件名）
             let folderPath = path.replace(/[^\\\/]*$/, '');
+
+            // 移除末尾的斜杠
             if (folderPath.endsWith('\\') || folderPath.endsWith('/')) {
                 folderPath = folderPath.slice(0, -1);
             }
 
-            // 如果获取到的是文件夹路径，直接返回
-            if (folderPath && folderPath !== path) {
-                return folderPath;
-            }
+            console.log('processPath 输出:', folderPath);
+            return folderPath;
 
-            // 处理特殊的连续字符串路径格式（无分隔符）
-            let result = path;
-            if (result.match(/^[A-Z]:/) && !result.includes('\\')) {
-                // 修复盘符格式
-                result = result.replace(/^([A-Z]):/, '$1:\\');
-
-                // 按顺序处理路径段，每次只处理一个匹配
-                let remainder = result.substring(3); // 去掉 D:\
-                const segments = [result.substring(0, 3)]; // 保留 D:\
-
-                // 按顺序匹配和处理各个部分
-                if (remainder.startsWith('cg_sync')) {
-                    segments.push('cg_sync');
-                    remainder = remainder.substring(7);
-                }
-
-                if (remainder.startsWith('strmfile')) {
-                    segments.push('strmfile');
-                    remainder = remainder.substring(8);
-                }
-
-                if (remainder.startsWith('.ADV')) {
-                    segments.push('7.ADV');
-                    remainder = remainder.substring(4);
-                }
-
-                if (remainder.startsWith('JAV')) {
-                    segments.push('JAV');
-                    remainder = remainder.substring(3);
-                }
-
-                // 处理 Z.待入库ready 格式
-                const readyMatch = remainder.match(/^([A-Z])\.待入库ready(.*)$/);
-                if (readyMatch) {
-                    segments.push(readyMatch[1] + '.待入库ready');
-                    remainder = readyMatch[2];
-                }
-
-                // 处理剩余的文件名部分（去重复番号）
-                if (remainder) {
-                    const cleanName = remainder.replace(/([A-Z0-9-]+)-(.+?)\s*\1-(.+)$/i, '$1-$2 $3');
-                    segments.push(cleanName);
-                }
-
-                // 重新组装，但只返回文件夹路径（去掉最后的文件名）
-                if (segments.length > 1) {
-                    segments.pop(); // 移除文件名部分
-                }
-                result = segments.join('\\');
-            }
-
-            return result;
         } catch (e) {
             console.error('路径处理失败:', e);
             return path;
